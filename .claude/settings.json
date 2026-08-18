@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python test_merge.py)",
+      "Bash(python -c ' *)",
+      "Read(//f/秋招/HOT100 - Python/**)"
+    ],
+    "additionalDirectories": [
+      "F:\\秋招\\HOT100 - Python"
+    ]
+  }
+}
