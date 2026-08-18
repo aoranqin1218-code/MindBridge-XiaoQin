@@ -4,6 +4,9 @@ from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Any
 
+from app.core.enums import IntentType, RiskLevel
+from app.services.ai import has_consult_signal, has_high_risk_signal
+
 
 class AgentEventType(str, Enum):
     TURN_STARTED = "TURN_STARTED"                       # 一轮用户请求开始
@@ -267,3 +270,34 @@ class CollaborationBlackboard:
                 message=reason,
             )
         )
+
+    # 黑板最终意图：SAFETY_OVERRIDE 强制 RISK；否则取最新 intent 产物；产物缺失时用关键词信号兜底
+    def intent_value(self) -> IntentType:
+        if any(event.type == AgentEventType.SAFETY_OVERRIDE for event in self.events):
+            return IntentType.RISK
+        artifact = self.latest_artifact("intent")
+        if artifact:
+            try:
+                return IntentType(str(artifact.payload.get("intent", IntentType.CHAT.value)).upper())
+            except ValueError:
+                return IntentType.CHAT
+        if has_high_risk_signal(self.user_input):
+            return IntentType.RISK
+        if has_consult_signal(self.user_input):
+            return IntentType.CONSULT
+        return IntentType.CHAT
+
+    # 黑板最终风险等级：扫所有 risk 产物取最高档，SAFETY_OVERRIDE 出现则强制 HIGH
+    def risk_value(self) -> RiskLevel:
+        highest = RiskLevel.LOW
+        order = {RiskLevel.LOW: 1, RiskLevel.MEDIUM: 2, RiskLevel.HIGH: 3}
+        for artifact in self.artifacts_by_kind("risk"):
+            try:
+                risk = RiskLevel(str(artifact.payload.get("risk", RiskLevel.LOW.value)).upper())
+            except ValueError:
+                risk = RiskLevel.LOW
+            if order[risk] > order[highest]:
+                highest = risk
+        if any(event.type == AgentEventType.SAFETY_OVERRIDE for event in self.events):
+            return RiskLevel.HIGH
+        return highest

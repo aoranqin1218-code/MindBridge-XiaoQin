@@ -87,8 +87,8 @@ class EventDrivenAgentRuntimeService:
         return self._to_result(final_board, user)
 
     def _to_result(self, board: CollaborationBlackboard, user: UserAccount) -> AgentRunResult:
-        intent = self._select_intent(board)
-        risk = self._select_risk(board)
+        intent = board.intent_value()
+        risk = board.risk_value()
         context = board.latest_artifact("context")
         risk_artifact = board.latest_artifact("risk")
         accepted = board.accepted_artifact() or board.latest_artifact("response_proposal")
@@ -115,31 +115,6 @@ class EventDrivenAgentRuntimeService:
             collaboration_tasks=list(board.tasks.values()),
             collaboration_artifacts=list(board.artifacts),
         )
-
-    def _select_intent(self, board: CollaborationBlackboard) -> IntentType:
-        if any(event.type == AgentEventType.SAFETY_OVERRIDE for event in board.events):
-            return IntentType.RISK
-        artifact = board.latest_artifact("intent")
-        if not artifact:
-            return IntentType.CHAT
-        try:
-            return IntentType(str(artifact.payload.get("intent", IntentType.CHAT.value)).upper())
-        except ValueError:
-            return IntentType.CHAT
-
-    def _select_risk(self, board: CollaborationBlackboard) -> RiskLevel:
-        order = {RiskLevel.LOW: 1, RiskLevel.MEDIUM: 2, RiskLevel.HIGH: 3}
-        highest = RiskLevel.LOW
-        for artifact in board.artifacts_by_kind("risk"):
-            try:
-                risk = RiskLevel(str(artifact.payload.get("risk", RiskLevel.LOW.value)).upper())
-            except ValueError:
-                risk = RiskLevel.LOW
-            if order[risk] > order[highest]:
-                highest = risk
-        if any(event.type == AgentEventType.SAFETY_OVERRIDE for event in board.events):
-            return RiskLevel.HIGH
-        return highest
 
     def _fallback_messages(self, intent: IntentType, risk: RiskLevel, display_name: str, model_input: str) -> list[AiMessage]:
         return [

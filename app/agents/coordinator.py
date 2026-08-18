@@ -15,6 +15,7 @@ from app.agents.events import (
 from app.agents.registry import AgentCapability, AgentRegistry
 from app.core.config import Settings
 from app.core.enums import IntentType, RiskLevel
+from app.services.ai import has_high_risk_signal
 
 
 class EventDrivenCoordinator:
@@ -104,11 +105,11 @@ class EventDrivenCoordinator:
             task_id="task:assess-safety",
             title="Assess safety risk",
             capability=AgentCapability.SAFETY,
-            priority=TaskPriority.CRITICAL if _hard_high_risk(board.user_input) else TaskPriority.HIGH,
+            priority=TaskPriority.CRITICAL if has_high_risk_signal(board.user_input) else TaskPriority.HIGH,
             condition=board.user_input != "",
         )
-        intent = _intent_value(board)
-        risk = _risk_value(board)
+        intent = board.intent_value()
+        risk = board.risk_value()
         needs_context = intent in {IntentType.CONSULT, IntentType.RISK} or risk in {RiskLevel.MEDIUM, RiskLevel.HIGH}
         board = self._ensure_task_for_missing_artifact(
             board,
@@ -243,34 +244,3 @@ class EventDrivenCoordinator:
         self.coordinator_agent.remember_acceptance(response.id, reason)
         return board.accept_final(response.id, self.coordinator_agent.name, reason)
 
-
-def _intent_value(board: CollaborationBlackboard) -> IntentType:
-    artifact = board.latest_artifact("intent")
-    if artifact:
-        try:
-            return IntentType(str(artifact.payload.get("intent", IntentType.CHAT.value)).upper())
-        except ValueError:
-            return IntentType.CHAT
-    if _hard_high_risk(board.user_input):
-        return IntentType.RISK
-    return IntentType.CHAT
-
-
-def _risk_value(board: CollaborationBlackboard) -> RiskLevel:
-    order = {RiskLevel.LOW: 1, RiskLevel.MEDIUM: 2, RiskLevel.HIGH: 3}
-    highest = RiskLevel.LOW
-    for artifact in board.artifacts_by_kind("risk"):
-        try:
-            risk = RiskLevel(str(artifact.payload.get("risk", RiskLevel.LOW.value)).upper())
-        except ValueError:
-            risk = RiskLevel.LOW
-        if order[risk] > order[highest]:
-            highest = risk
-    if any(event.type == AgentEventType.SAFETY_OVERRIDE for event in board.events):
-        return RiskLevel.HIGH
-    return highest
-
-
-def _hard_high_risk(text: str) -> bool:
-    lowered = (text or "").lower()
-    return any(word in lowered for word in ["自杀", "自残", "不想活", "结束生命", "伤害自己", "轻生", "suicide", "kill myself", "self harm"])

@@ -390,7 +390,7 @@ class SafetyAgent(BaseAutonomousAgent):
         self, task: AgentTask, board: CollaborationBlackboard, response: AgentArtifact
     ) -> AgentTurnResult:
         
-        risk = _risk_level(board)                                                       # 决定了"关键词检查要不要执行"
+        risk = board.risk_value()                                                       # 决定了"关键词检查要不要执行"
         messages = response.payload.get("messages", [])                                 # 取出候选回复的消息列表
         combined = "\n".join(
             getattr(message, "content", str(message)) for message in messages
@@ -479,8 +479,8 @@ class ContextAgent(BaseAutonomousAgent):
         if board.latest_artifact("context"):
             return AgentDecision(False, reason="context artifact already exists")
         
-        risk = _risk_level(board)                                       # 取出产物风险等级的最高档
-        intent = _intent(board)                                         # 取出当前黑板上最终意图
+        risk = board.risk_value()                                       # 取出产物风险等级的最高档
+        intent = board.intent_value()                                         # 取出当前黑板上最终意图
 
         if AgentCapability.CONTEXT.value in task.required_capabilities:
             return AgentDecision(True, 0.86, "task explicitly asks for context")
@@ -524,8 +524,8 @@ class ContextAgent(BaseAutonomousAgent):
         )
 
         # 从黑板读当前轮意图和风险等级——这两个决定"要不要检索知识、要不要skill"
-        intent = _intent(board)
-        risk = _risk_level(board)
+        intent = board.intent_value()
+        risk = board.risk_value()
 
         retrieved: list["SearchResult"] = []                                        # 检索到的知识
         query = ""
@@ -682,8 +682,8 @@ class ResponseAgent(BaseAutonomousAgent):
                 False, reason="response needs intent and risk artifacts"
             )
         
-        intent = _intent(board)
-        risk = _risk_level(board)
+        intent = board.intent_value()
+        risk = board.risk_value()
 
         # ① 闲聊且低风险 → 不需要上下文，直接出普通回复
         if intent == IntentType.CHAT and risk == RiskLevel.LOW:
@@ -703,8 +703,8 @@ class ResponseAgent(BaseAutonomousAgent):
 
     def act(self, task: AgentTask, board: CollaborationBlackboard) -> AgentTurnResult:
 
-        intent = _intent(board)
-        risk = _risk_level(board)
+        intent = board.intent_value()
+        risk = board.risk_value()
 
         context = board.latest_artifact("context")
         context_payload = context.payload if context else {}
@@ -832,49 +832,6 @@ class CoordinatorAgent(BaseAutonomousAgent):
         self.remember(f"accepted={artifact_id}; reason={reason}")
 
 
-# 汇总黑板上最终意图：优先取 intent 产物的结论；没有产物则用关键词信号兜底判定
-# 消费者：Coordinator / ContextAgent / ResponseAgent 用它决定派任务、要不要检索、怎么回复
-def _intent(board: CollaborationBlackboard) -> IntentType:
-    artifact = board.latest_artifact("intent")
-    if artifact:
-        try:
-            # 取产物里的意图值，没有给 "CHAT" 兜底
-            return IntentType(
-                str(artifact.payload.get("intent", IntentType.CHAT.value)).upper()          
-            )
-        except ValueError:
-            return IntentType.CHAT                                      # CHAT 兜底
-
-    # 没有意图产物的分支
-    if has_high_risk_signal(board.user_input):
-        return IntentType.RISK
-    if has_consult_signal(board.user_input):
-        return IntentType.CONSULT
-    return IntentType.CHAT
-
-
-# 汇总黑板上所有 risk 产物的风险等级，取最高档；若事件流里出现过 SAFETY_OVERRIDE 则直接强制 HIGH
-# 注意：risk 产物确实只有 SafetyAgent 产，_risk_level 读的正是它
-# 但这不叫自审，因为 risk 反映的是"用户危险程度"这一客观事实，评估和审查是两个任务、两个时间点，前者产数据、后者消费数据，没有循环
-def _risk_level(board: CollaborationBlackboard) -> RiskLevel:
-    highest = RiskLevel.LOW
-    order = {RiskLevel.LOW: 1, RiskLevel.MEDIUM: 2, RiskLevel.HIGH: 3}
-    for artifact in board.artifacts_by_kind("risk"):
-        try:
-            risk = RiskLevel(
-                str(artifact.payload.get("risk", RiskLevel.LOW.value)).upper()
-            )
-        except ValueError:
-            risk = RiskLevel.LOW
-
-        # 比较当前产物的等级和已记录的最高等级，谁大谁当 highest
-        if order[risk] > order[highest]:
-            highest = risk
-    # SAFETY_OVERRIDE 是 SafetyAgent 发现"硬关键词没命中但 LLM 评估高危"时发的。
-    # 它的存在意味着"有专家判断这轮高危"——所以产物等级再低也压不住它
-    if any(event.type == AgentEventType.SAFETY_OVERRIDE for event in board.events):
-        return RiskLevel.HIGH
-    return highest
 
 
 # 从黑板上下文产物里取模型对话历史，供风险评估等作为上下文喂给模型；没有上下文产物时退化为只含本轮输入的单条列表
