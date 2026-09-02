@@ -509,15 +509,17 @@ class ContextAgent(BaseAutonomousAgent):
         history = self._load_history()
 
         # 压短历史 + 出摘要
+        # 注意：此刻的摘要是兜底的摘要
         compacted_history, deterministic_brief = compact_history_for_prompt(    
             history, self.services.settings, board.model_input
         )
+
         # 再让 LLM 精炼成记忆要点
-        # deterministic_brief 是廉价兜底摘要（不花钱、规则拼的）
         # memory_brief 是LLM 精炼版（更好但可能失败，失败就退回 deterministic_brief）
         memory_brief = self._summarize_memory(
             history, board.model_input, deterministic_brief
         )
+
         # 裁剪条数上限
         model_history = self._bounded_model_history(
             [*compacted_history, AiMessage(role="user", content=board.model_input)]
@@ -535,6 +537,7 @@ class ContextAgent(BaseAutonomousAgent):
         if intent != IntentType.CHAT or risk != RiskLevel.LOW:
             # LLM 改写的检索查询词（把用户的话变成适合查库的词）
             query = self._rewrite_query(memory_brief, board.model_input)
+            
             retrieved = self.services.knowledge.retrieve(
                 query, self.services.settings.knowledge_top_k                       # RAG 查知识库
             )
@@ -578,15 +581,21 @@ class ContextAgent(BaseAutonomousAgent):
         history = self.services.memory.load_recent(self.services.session.public_id)
         if history:
             return history
+
+        # 这里就要去Mysql里面取出会话历史了
         rows = (
-            self.services.db.query(ChatMessage)
-            .filter(ChatMessage.session_id == self.services.session.id)
-            .order_by(ChatMessage.created_at.desc())
-            .limit(self.services.settings.redis_memory_max_messages)
-            .all()
+            self.services.db.query(ChatMessage)                                     # 指定要查哪个表
+            .filter(ChatMessage.session_id == self.services.session.id)             # 只取这个会话的消息
+            .order_by(ChatMessage.created_at.desc())                                # 从新到旧排：最新消息在前
+            .limit(self.services.settings.redis_memory_max_messages)                # limit 取的是最新的 N 条
+            .all()                                                              # 真正执行查询，把结果物化成 Python 对象列表
         )
+
+        # 为什么反转：第①步取回的是倒序（最新在前），
+        # 但对话历史的自然顺序是正序（最早在前、最新在后）。所以要 reverse() 把它翻正，变成时间正序
         rows.reverse()
-        history = self.services.memory.messages_from_rows(rows)
+
+        history = self.services.memory.messages_from_rows(rows)                     # "存储结构 → 逻辑实体"的转换，还顺便脱敏
         if history:
             self.services.memory.replace(self.services.session.public_id, history)
         return history
@@ -618,7 +627,10 @@ class ContextAgent(BaseAutonomousAgent):
     def _summarize_memory(
         self, history: list[AiMessage], current_input: str, fallback: str
     ) -> str:
+
+        # 限制的是最终进入记忆的摘要长度，不是模型生成过程
         max_chars = max(120, self.services.settings.memory_summary_max_chars)
+
         if not history:
             return "无相关历史记忆。"
         try:
@@ -643,12 +655,17 @@ class ContextAgent(BaseAutonomousAgent):
             return fallback or "无相关历史记忆。"
 
     # 把对话历史裁剪到配置允许的条数上限（首条 system 保留，其余取尾部）
+    # 一般情况根本不会走到裁剪。它的作用不是"放宽到 20"，而是"兜底保证：万一输入真的超了，最多砍到 20"
     def _bounded_model_history(self, history: list[AiMessage]) -> list[AiMessage]:
         limit = max(2, self.services.settings.chat_history_limit * 2)
+
         if len(history) <= limit:
             return history
+
+        # 专门处理了"首条是 system"的情况
         if history[0].role == "system":
             return [history[0], *history[-(limit - 1) :]]
+        
         return history[-limit:]
 
 # ResponseAgent 面对两种任务

@@ -16,10 +16,11 @@ from app.services.privacy import PrivacySanitizer
 logger = logging.getLogger(__name__)
 
 
+# Protocol：只声明"配置对象长什么样"的结构契约，不绑定具体类；任何有这三个属性的对象都算满足
 class MemoryCompactionSettings(Protocol):
-    memory_compaction_enabled: bool
-    memory_compaction_recent_messages: int
-    memory_summary_max_chars: int
+    memory_compaction_enabled: bool                    # 是否启用记忆压缩（config.py:62 默认 True；为 False 时不做摘要，直接用原文）
+    memory_compaction_recent_messages: int             # 超过多少条历史才触发压缩，只取最近 N 条做摘要（config.py:63 默认 8）
+    memory_summary_max_chars: int                      # 压缩摘要的最大字符数，超长截断（config.py:64 默认 500）
 
 
 class RedisShortTermMemoryStore:
@@ -62,19 +63,27 @@ class RedisShortTermMemoryStore:
         except Exception as exc:
             logger.warning("Redis memory append unavailable: %s", exc)
 
-    # 整段替换某会话的记忆：先删旧 key，再一次性写入给定消息列表（含裁剪 + 续期）
+    # Redis 记忆为空/需要重置时，用 MySQL 永久档案整体覆盖 Redis 短期记忆
+    # 不是"追加"，而是"用这份完整历史覆盖 Redis 里的旧值"——因为此时 Redis 是空的（刚查过没有才走到这里），所以覆盖即初始化
     def replace(self, session_public_id: str, messages: list[AiMessage]) -> None:
         if self.client is None:
             return
         key = self._key(session_public_id)
+
+        # 开一个 pipeline（管道）：把多条 Redis 命令打包一次发给服务器，而不是每条往返一次。
+        # 这里要 delete + rpush + ltrim + expire 四件事，用管道一趟搞定，省网络开销
         pipe = self.client.pipeline()
+
+        # 先删掉这个 key 上已有的旧值——这就是"替换"语义的核心：旧的清空，新的整体写入
         pipe.delete(key)
+
+        # delete 在外、rpush 在 if messages 里。如果 messages 为空，就只删不写（结果是这个 key 被清空）
         if messages:
             pipe.rpush(key, *[self._serialize(message.role, message.content) for message in messages])
             pipe.ltrim(key, -self.settings.redis_memory_max_messages, -1)
             pipe.expire(key, self.settings.redis_memory_ttl_seconds)
         try:
-            pipe.execute()
+            pipe.execute()                                                  # 把管道里攒的这批命令真正发给 Redis 执行
         except Exception as exc:
             logger.warning("Redis memory replace unavailable: %s", exc)
 
@@ -88,12 +97,14 @@ class RedisShortTermMemoryStore:
         messages = []
         for raw in raw_items:
             try:
-                data = json.loads(raw)
+                data = json.loads(raw)                              # json.loads 解决的是"字符串 → 字典"这一层
             except json.JSONDecodeError:
                 continue
             role = str(data.get("role", "")).lower()
             content = str(data.get("content", ""))
             if role and content:
+
+                # 读取时再脱敏是"出口兜底"（防御非本路径写入的脏数据）
                 messages.append(AiMessage(role=role, content=self.privacy.sanitize(content)))
         return messages
 
@@ -106,6 +117,8 @@ class RedisShortTermMemoryStore:
             raise RuntimeError("请先安装 requirements.txt 中的 redis 依赖") from exc
         client = redis_module.Redis.from_url(                                       # from_url() 用连接字符串创建客户端，等价于 redis://localhost:6379/0
             self.settings.redis_url,                                                # 连接地址
+
+            # decode_responses=True 解决的是"字节 → 字符串"这一层
             decode_responses=True,                                                  # 从 Redis 读出来的字节自动转成 Python 字符串，不用手动 .decode()
             socket_timeout=self.settings.redis_socket_timeout_seconds,              # 读数据超时时间，防止某个请求永远卡住
             socket_connect_timeout=self.settings.redis_socket_timeout_seconds,      # 建立 TCP 连接的超时，连不上就尽快放弃
@@ -137,29 +150,34 @@ class RedisShortTermMemoryStore:
         return f"mindbridge:short-term-memory:{session_public_id}"
 
 
+# 把完整对话历史整理成"供 prompt 的有界历史 + 记忆摘要"：
+# 脱敏后若超阈值则压成"摘要 + 最近 N 条原文"，否则原样返回；由 ContextAgent.act() 调用
 def compact_history_for_prompt(
-    history: list[AiMessage],
-    settings: MemoryCompactionSettings,
-    current_input: str = "",
+    history: list[AiMessage],                               # 完整历史消息列表，函数内部会先脱敏再按配置决定是否压缩
+    settings: MemoryCompactionSettings,                     # 记忆压缩配置（Protocol）：是否启用/阈值条数/摘要上限
+    current_input: str = "",                                # 本轮用户输入，用于摘要时标注"本轮关注"，可留空
 ) -> tuple[list[AiMessage], str]:
-    """Return bounded prompt history plus a student-safe memory brief.
+    """返回有界的历史（供 prompt 使用）+ 一份对学生的安全记忆摘要。
 
-    The summary is deterministic and avoids diagnostic labels. It is intended
-    for prompt context and auditability, not for student-facing display.
+    摘要由确定性规则生成、避免诊断性标签，仅供 prompt 上下文与审计使用，
+    不用于向学生展示。
     """
 
+    # history 来自 self._load_history()——它优先从 Redis 读，Redis 空则从 MySQL 回填
     sanitized = [AiMessage(role=item.role, content=PrivacySanitizer().sanitize(item.content)) for item in history]
     if not sanitized:
         return [], "无相关历史记忆。"
 
     recent_count = max(2, int(getattr(settings, "memory_compaction_recent_messages", 8)))
     max_chars = max(120, int(getattr(settings, "memory_summary_max_chars", 500)))
+    
     brief = summarize_history_for_memory(sanitized, current_input, max_chars)
 
+    # 不需要压缩的分支
     if not getattr(settings, "memory_compaction_enabled", True) or len(sanitized) <= recent_count:
-        return sanitized, brief
+        return sanitized, brief                 # 即使不压缩，摘要也照样生成返回（它是"廉价兜底"，供后续 LLM 精炼用），只是历史不截断
 
-    recent = sanitized[-recent_count:]
+    recent = sanitized[-recent_count:]          # 只留最近 8 条原文
     summary_message = AiMessage(
         role="system",
         content=(
@@ -170,10 +188,16 @@ def compact_history_for_prompt(
     return [summary_message, *recent], brief
 
 
+# 规则式生成记忆摘要（不调模型）：
+# "真正像摘要的那个"在 _summarize_memory（autonomous.py:618），不在 memory.py。
+# 这个函数是 fallback——当模型不可用时，至少给一份"拼接版背景"，不让上下文空着
 def summarize_history_for_memory(history: list[AiMessage], current_input: str = "", max_chars: int = 500) -> str:
     privacy = PrivacySanitizer()
     user_points = []
     assistant_points = []
+
+    # 历史消息可能带换行、缩进、连续空格（尤其用户聊天时随手敲的），这些空白在摘要里没有信息量，反而会把"一条摘要"撑得七零八落
+    # 把连续空白折叠成单个空格：换行、制表符、多个连续空格统统归一成一个空格，开头结尾的空白删掉
     for message in history:
         content = " ".join(privacy.sanitize(message.content).split())
         if not content:
@@ -185,6 +209,7 @@ def summarize_history_for_memory(history: list[AiMessage], current_input: str = 
 
     parts = []
     if user_points:
+        # 只取学生最近说的 4 条，每条 _clip 截到 80 字符，用"；"连接，拼成"学生近期关注：..."这一段
         parts.append("学生近期关注：" + "；".join(_clip(item, 80) for item in user_points[-4:]))
     if assistant_points:
         parts.append("已给过的支持：" + "；".join(_clip(item, 70) for item in assistant_points[-3:]))
@@ -195,8 +220,9 @@ def summarize_history_for_memory(history: list[AiMessage], current_input: str = 
     return _clip("\n".join(parts), max_chars)
 
 
+# 把文本折叠空白后限长截断：超过 limit 字符则在 limit-3 处截断并补 "..."；空值/None 归一为空串。摘要各片段及最终摘要都用它控长
 def _clip(text: str, limit: int) -> str:
-    normalized = " ".join((text or "").split())
+    normalized = " ".join((text or "").split())                                 # 把任意输入收敛到规范形态
     if len(normalized) <= limit:
         return normalized
     return normalized[: max(0, limit - 3)] + "..."
