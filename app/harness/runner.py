@@ -37,29 +37,42 @@ class HarnessContext:
         return self.database.SessionLocal()
 
 
+# 进程内短期记忆存储：接口与 RedisShortTermMemoryStore 一致（load_recent / append / replace / reset），
+# 但不连 Redis，消息只存在进程内存里。工程自检（harness）通过 install_harness_patches() 把它注入
+# memory / harness / runtime 等模块顶替真实存储，让自检能在没有 Redis 服务的环境下独立运行。
 class InMemoryShortTermMemoryStore:
+
+    # 内存"数据库"：key 为会话 public_id，value 为该会话的消息列表，按追加顺序保存
     _messages: dict[str, list[object]] = {}
 
     def __init__(self, settings):
         self.settings = settings
 
+    # 读取某会话最近的对话记忆（最多 redis_memory_max_messages 条）：
     def load_recent(self, session_public_id: str) -> list[object]:
         limit = self.settings.redis_memory_max_messages
         return list(self._messages.get(session_public_id, []))[-limit:]
 
+    # 把 MySQL chat_messages 表行对象批量转成 AiMessage（角色统一小写），
+    # 供"把永久档案回填成短期记忆"时把 DB 行转成记忆消息使用
     def messages_from_rows(self, rows: list[object]) -> list[object]:
         from app.schemas.dtos import AiMessage
 
         return [AiMessage(role=row.role.lower(), content=row.content) for row in rows]
 
+    # 把一条消息追加到某会话的短期记忆末尾：先脱敏再入列，
+    # 并把列表裁剪到只留最近 redis_memory_max_messages 条（等价于真实实现的 RPUSH + LTRIM）
     def append(self, session_public_id: str, role: str, content: str) -> None:
         from app.schemas.dtos import AiMessage
         from app.services.privacy import PrivacySanitizer
 
         values = self._messages.setdefault(session_public_id, [])
+
         values.append(AiMessage(role=role.lower(), content=PrivacySanitizer().sanitize(content)))
         del values[:-self.settings.redis_memory_max_messages]
 
+    # 用整份消息覆盖某会话的短期记忆（是"替换"而非"追加"）：整体写入、逐条脱敏，
+    # 同时裁剪到最近 redis_memory_max_messages 条（等价于真实实现的 DELETE + RPUSH + LTRIM）
     def replace(self, session_public_id: str, messages: list[object]) -> None:
         from app.schemas.dtos import AiMessage
         from app.services.privacy import PrivacySanitizer
@@ -70,36 +83,56 @@ class InMemoryShortTermMemoryStore:
             for message in list(messages)[-self.settings.redis_memory_max_messages:]
         ]
 
+    # 清空所有会话的记忆。_messages 是类属性（进程内所有实例共享同一份数据），故 reset 也做成类方法；
+    # 供 harness 在每条自检用例执行前调用，重置记忆状态、避免用例之间相互污染
     @classmethod
     def reset(cls) -> None:
         cls._messages.clear()
 
 
+# 命令行入口：解析 --suite / --json 参数，配置隔离环境后按 suite 逐项重置并执行，
+# 汇总六类结果写入报告；全部通过返回 0，任一失败返回 1
 def main(argv: list[str] | None = None) -> int:
+
+    # argparse 是"命令行参数解析器"，专门解决"用户从终端敲命令时，怎么把参数传给你的程序、怎么校验、怎么生成 --help"这套问题
     parser = argparse.ArgumentParser(description="Run MindBridge engineering harness checks.")
     parser.add_argument(
-        "--suite",
+        "--suite",                                                 # 登记：接受一个 --suite 参数，可重复，取值限定在 choices 里
         action="append",
         choices=["risk", "routing", "skills", "rag", "api", "tool-queue", "all"],
         default=None,
         help="Harness suite to run. Can be supplied multiple times.",
     )
-    parser.add_argument("--json", action="store_true", help="Print only JSON output.")
+
+    parser.add_argument("--json", action="store_true", help="Print only JSON output.")      # 登记：接受一个开关 --json
+
+    # parse_args() 一执行，它就会：
+    # 去读命令行（默认 sys.argv，即你在终端敲的 python runner.py --suite risk --json）；
+    # 按前面登记过的规则去匹配；
+    # 匹配不合法就报错退出（比如 --suite abc 不在 choices 里）；
+    # 合法就把结果打包成一个 args 对象给你用——args.suite、args.json。
     args = parser.parse_args(argv)
 
-    configure_environment()
-    context = build_context()
-    install_harness_patches()
-    reset_database(context)
+    configure_environment()                                                     # 布置隔离环境
+    context = build_context()                                                   # 环境变量变了，但 get_settings() 有缓存，所以先 cache_clear() 再重新读 Settings
+    install_harness_patches()                                                   # 把 Redis 换成内存版
+    reset_database(context)                                                     # 从零重建数据库
 
+    # 把 --suite risk 这类请求翻译成要跑的 (suite名字, 执行函数) 列表；不传就默认六类全跑
     suites = resolve_suites(args.suite)
-    results: list[CheckResult] = []
-    for name, fn in suites:
-        reset_database(context)
-        InMemoryShortTermMemoryStore.reset()
-        results.append(run_check(name, fn, context))
+    # suites 是 resolve_suites() 返回的列表，每个元素是一个二元组 (名字, 函数)
 
+    results: list[CheckResult] = []
+
+    for name, fn in suites:
+        reset_database(context)                                                 # 第二重隔离
+        InMemoryShortTermMemoryStore.reset()                                    # 顺带把内存短期记忆也清空
+        results.append(run_check(name, fn, context))                            # 一个 suite 挂了，后面的 suite 照常跑
+
+    # 把总报告写进 target/harness/harness-report.json 并返回报告 dict
     report = write_report(context, results)
+
+    # 命令行敲了 --json → args.json 是 True
     if args.json:
         print(json.dumps(report, ensure_ascii=False, indent=2))
     else:
@@ -107,16 +140,22 @@ def main(argv: list[str] | None = None) -> int:
     return 0 if all(result.passed for result in results) else 1
 
 
+# 布置"自检专用隔离环境"，分两步：
+# ① 清理文件：确定项目根与 target/harness 产物目录，删掉上次留下的 SQLite 库（含 -wal/-shm），从干净状态开始；
+# ② 改写环境变量：把系统切到"SQLite + Mock AI + 关掉真实向量/工具队列/邮件"的隔离模式，
+#    让后续 import 的 Settings 读到的是一套不依赖外部服务的配置。因此必须在构造业务对象之前调用
 def configure_environment() -> None:
-    root = Path(__file__).resolve().parents[2]
-    target_dir = root / "target" / "harness"
+    root = Path(__file__).resolve().parents[2]           # 本文件在 app/harness/ 下，往上两级 = 项目根
+    target_dir = root / "target" / "harness"             # 自检产物（报告/Excel 等）统一放这里
     target_dir.mkdir(parents=True, exist_ok=True)
     db_path = target_dir / "mindbridge-harness.sqlite3"
-    for suffix in ["", "-wal", "-shm"]:
+    for suffix in ["", "-wal", "-shm"]:                  # SQLite 一个库对应主文件 + WAL 日志 + SHM 共享内存三个文件
         candidate = Path(f"{db_path}{suffix}")
         if candidate.exists():
-            candidate.unlink()
+            candidate.unlink()                           # 删掉这个文件
 
+    # os.environ[...] = "..." 就是往当前 Python 进程的环境变量表里写一个键值对。
+    # 项目里的 Settings（app/core/config.py）是从环境变量读配置的——所以这里写什么，后面整个系统就拿什么当配置。
     os.environ["DATABASE_URL"] = f"sqlite:///{db_path.as_posix()}"
     os.environ["AI_PROVIDER"] = "mock"
     os.environ["AGENT_FRAMEWORK"] = "event_driven_multi_agent"
@@ -128,6 +167,7 @@ def configure_environment() -> None:
     os.environ["RAG_EVAL_OUTPUT"] = str((target_dir / "rag-eval-report.json").as_posix())
 
 
+# 重建 Settings 与数据库引擎，打包成 HarnessContext。
 def build_context() -> HarnessContext:
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
@@ -135,20 +175,30 @@ def build_context() -> HarnessContext:
     from app.core.config import get_settings
     import app.core.database as database
 
-    get_settings.cache_clear()
-    settings = get_settings()
+    get_settings.cache_clear()                                            # 清缓存，强制重读环境变量
+    settings = get_settings()                                             # 现在读到的才是隔离模式配置
     if getattr(database, "engine", None) is not None:
-        database.engine.dispose()
+        database.engine.dispose()                                         # 关掉旧的数据库连接池
+
+    # 建新引擎 + Session 工厂
+
+    # 创建一个"数据库引擎"。它不立刻连数据库，而是先记住"怎么连"（URL、连接参数），并管理一个连接池
     database.engine = create_engine(settings.database_url, connect_args={"check_same_thread": False}, pool_pre_ping=True)
+
+    # 生成一个 Session 工厂。SQLAlchemy 的 Session 是和数据库打交道的"工作单元"——查询、增删改都在 Session 里做，最后 commit
     database.SessionLocal = sessionmaker(bind=database.engine, autoflush=False, autocommit=False)
+
     return HarnessContext(
         root=Path(__file__).resolve().parents[2],
         target_dir=Path(__file__).resolve().parents[2] / "target" / "harness",
         settings=settings,
-        database=database,
+        database=database,                                                  # 整个 database 模块
     )
 
 
+# 把三个模块里"引用 RedisShortTermMemoryStore"的那个名字，统一替换成内存版 InMemoryShortTermMemoryStore。
+# 因为各模块是 `from app.services.memory import RedisShortTermMemoryStore` 直接绑定到本地名字的，
+# 只改 memory.py 里的定义没用，必须去每个"使用者模块"里把那个名字也改掉
 def install_harness_patches() -> None:
     import app.agents.event_driven_runtime as runtime_module
     import app.agents.harness as harness_module
@@ -159,18 +209,24 @@ def install_harness_patches() -> None:
     runtime_module.RedisShortTermMemoryStore = InMemoryShortTermMemoryStore
 
 
+# 从零重建测试数据库：删光所有表 → 按模型定义重建 → 灌入种子数据（student/admin 用户等）
 def reset_database(context: HarnessContext) -> None:
     from app.core.bootstrap import seed_data
 
-    context.database.Base.metadata.drop_all(bind=context.database.engine)
-    context.database.Base.metadata.create_all(bind=context.database.engine)
+    context.database.Base.metadata.drop_all(bind=context.database.engine)      # 删掉所有表（清空上一轮数据）
+    context.database.Base.metadata.create_all(bind=context.database.engine)     # 重新建表
+
+    # 造出一个新的数据库会话 db。
+    # db 是 SQLAlchemy 的 Session，你可以把它理解成"和数据库之间的一次对话通道"
     db = context.session()
     try:
-        seed_data(db)
+        seed_data(db)                                                          # 灌初始数据
     finally:
-        db.close()
+        db.close()                                                             # 无论成败都关会话
 
 
+# 把命令行请求（--suite risk 或 --suite all）解析成"要执行哪些 suite"的 (名字, 函数) 列表。
+# 不传或传 all → 六类全跑；否则按别名（risk/routing/skills/rag/api/tool-queue）挑出对应的几个
 def resolve_suites(requested: list[str] | None) -> list[tuple[str, Callable[[HarnessContext], dict]]]:
     all_suites: list[tuple[str, Callable[[HarnessContext], dict]]] = [
         ("Risk Safety Harness", run_risk_safety_harness),
@@ -182,6 +238,7 @@ def resolve_suites(requested: list[str] | None) -> list[tuple[str, Callable[[Har
     ]
     if not requested or "all" in requested:
         return all_suites
+
     selected = set(requested)
     aliases = {
         "risk": "Risk Safety Harness",
@@ -195,6 +252,9 @@ def resolve_suites(requested: list[str] | None) -> list[tuple[str, Callable[[Har
     return [suite for suite in all_suites if suite[0] in names]
 
 
+# 安全执行单个 suite：跑 fn(context)，把结果装进 CheckResult。
+# 之所以把 HarnessFailure（断言失败）和普通异常分开捕获：断言失败只需记失败信息，继续跑下一个；
+# 普通异常还要带完整 traceback，方便定位是哪个业务调用崩了。两种都不让异常冒出去中断整个 harness
 def run_check(name: str, fn: Callable[[HarnessContext], dict], context: HarnessContext) -> CheckResult:
     try:
         return CheckResult(name=name, passed=True, details=fn(context))
@@ -654,6 +714,8 @@ def expect(condition: bool, message: str) -> None:
         raise HarnessFailure(message)
 
 
+# 把全部 CheckResult 汇总成一份报告 dict，写进 target/harness/harness-report.json 后返回。
+# report 里带 createdAt（时间戳）、environment（本次用了哪些隔离配置）、passed（是否全过）和逐条 results
 def write_report(context: HarnessContext, results: list[CheckResult]) -> dict:
     report = {
         "createdAt": datetime.utcnow().isoformat(),
@@ -674,12 +736,17 @@ def write_report(context: HarnessContext, results: list[CheckResult]) -> dict:
             for result in results
         ],
     }
+
     output = context.target_dir / "harness-report.json"
+
+    # ensure_ascii=False 让中文原样输出；default=str 兜住 dataclass/枚举等非 JSON 原生类型，避免序列化报错
     output.write_text(json.dumps(report, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
     report["reportPath"] = str(output)
     return report
 
 
+# 把报告打印成人类可读的摘要：每个 suite 一行 [PASS]/[FAIL]，通过时附上（截断到 900 字符的）细节，
+# 失败时打印每一条失败信息；最后给一行 Overall 总结
 def print_report(report: dict) -> None:
     print("MindBridge Engineering Harness")
     print(f"Report: {report['reportPath']}")
@@ -689,7 +756,7 @@ def print_report(report: dict) -> None:
         print(f"[{status}] {result['name']}")
         if result["passed"] and result["details"]:
             compact = json.dumps(result["details"], ensure_ascii=False, default=str)
-            print(f"       {compact[:900]}")
+            print(f"       {compact[:900]}")          # 细节太长只显示前 900 字符，避免刷屏
         for failure in result["failures"]:
             print(f"       {failure}")
     print("")
@@ -697,4 +764,6 @@ def print_report(report: dict) -> None:
 
 
 if __name__ == "__main__":
+
+    # sys.exit(main()) 就是把 main 返回的 0 或 1，变成整个 Python 进程真正的退出状态，交给操作系统
     sys.exit(main())
