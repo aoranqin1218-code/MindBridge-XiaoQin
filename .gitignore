@@ -1,6 +1,7 @@
 .venv/
 __pycache__/
 *.pyc
+*.egg-info/
 .env
 .uploads/
 data/*.db
@@ -12,4 +13,3 @@ target/
 .DS_Store
 doc
 MindBridge项目学习总路线.md
-
