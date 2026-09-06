@@ -39,6 +39,8 @@ class SkillRegistryTests(unittest.TestCase):
 
             self.assertEqual(status["status"], "WARN")
             self.assertTrue(status["issues"])
+            expected_path = (root / "demo_skill" / "SKILL.md").relative_to(root.parent).as_posix()
+            self.assertEqual(status["path"], expected_path)
 
     def test_skill_requires_frontmatter(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -47,6 +49,10 @@ class SkillRegistryTests(unittest.TestCase):
 
             with self.assertRaises(SkillLoadError):
                 MindBridgeSkillRegistry(root).get_required("bad")
+
+            status = MindBridgeSkillRegistry(root).status_items()[0]
+            expected_path = (root / "bad" / "SKILL.md").relative_to(root.parent).as_posix()
+            self.assertEqual(status["path"], expected_path)
 
 
 if __name__ == "__main__":
