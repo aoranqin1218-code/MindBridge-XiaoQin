@@ -18,13 +18,23 @@ from app.services.vector_store import FALLBACK_RETRIEVAL_LABEL, PRIMARY_RETRIEVA
 logger = logging.getLogger(__name__)
 
 
+EvidenceKey = tuple[str, int]
+
+
 # 一条检索命中的知识片段：BM25 检索、向量检索、邻居扩展、rerank 的通用产物，也是最终交给 Agent 的知识单元
 @dataclass
 class SearchResult:
     chunk_id: int | None                            # 知识片段在数据库中的主键；向量检索命中但库里查不到时为 None
     source: str                                     # 来源文档名/标识（如 risk-policy.md），展示和溯源用
+    source_index: int                               # 片段在来源内的稳定序号；与 source 共同组成评测证据键
     content: str                                    # 片段文本内容，最终拼进回复 prompt 的知识段落
     score: float                                    # 相关性分数：单一检索时是原始分，融合阶段是加权后的最终分
+    expanded_context_evidence: tuple[EvidenceKey, ...] = ()  # 仅记录拼入 content 的相邻证据，不参与该结果的排名身份
+
+    @property
+    def evidence_key(self) -> EvidenceKey:
+        """返回供检索指标计分使用的"排序锚点"证据身份标识（来源文件名 + 段内序号）。"""
+        return (self.source, self.source_index)
 
 
 # 融合阶段的中间候选：把"同一片段"的向量分与 BM25 分合并记录，再加权求和出最终 score
@@ -163,7 +173,13 @@ class KnowledgeService:
         scores = bm25_scores(query, chunks)                             
 
         ranked = [
-            SearchResult(chunk.id, chunk.source, chunk.content, scores.get(chunk.id, 0.0))
+            SearchResult(
+                chunk_id=chunk.id,
+                source=chunk.source,
+                source_index=chunk.source_index,
+                content=chunk.content,
+                score=scores.get(chunk.id, 0.0),
+            )
             for chunk in chunks
             if chunk.id is not None and scores.get(chunk.id, 0.0) > 0
         ]
@@ -266,10 +282,11 @@ class KnowledgeService:
             chunk = self.db.get(KnowledgeChunk, hit.chunk_id) if hit.chunk_id is not None else None
             results.append(
                 SearchResult(
-                    chunk.id if chunk is not None else hit.chunk_id,
-                    chunk.source if chunk is not None else hit.source,
-                    chunk.content if chunk is not None else hit.content,
-                    hit.score,
+                    chunk_id=chunk.id if chunk is not None else hit.chunk_id,
+                    source=chunk.source if chunk is not None else hit.source,
+                    source_index=chunk.source_index if chunk is not None else hit.source_index,
+                    content=chunk.content if chunk is not None else hit.content,
+                    score=hit.score,
                 )
             )
         return results
@@ -407,7 +424,20 @@ class KnowledgeService:
             .order_by(KnowledgeChunk.source_index.asc())
             .all()
         )
-        return SearchResult(chunk.id, chunk.source, "\n\n".join(item.content for item in neighbors), result.score)
+        anchor_evidence = (chunk.source, chunk.source_index)
+        expanded_context_evidence = tuple(                                          # 额外扩展进来的上下文
+            (item.source, item.source_index)
+            for item in neighbors
+            if (item.source, item.source_index) != anchor_evidence                          # 排除锚点
+        )
+        return SearchResult(
+            chunk_id=chunk.id,
+            source=chunk.source,
+            source_index=chunk.source_index,
+            content="\n\n".join(item.content for item in neighbors),
+            score=result.score,
+            expanded_context_evidence=expanded_context_evidence,
+        )
 
 
 def chunk_text(content: str, size: int, overlap: int) -> list[str]:
@@ -521,13 +551,21 @@ def normalize_scores(scores: dict[Hashable, float]) -> dict[Hashable, float]:
     }
 
 
-# 生成"唯一标识一个片段"的哈希 key：有 chunk_id 用主键，没有（如向量兜底结果）退回"来源+内容"元组；融合时按它把同一片段的两路分数合并
+# 生成"唯一标识一个片段"的哈希 key：有 chunk_id 用主键，没有时退回稳定证据键
+# (source, source_index)；融合时按它把同一片段的两路分数合并。
 def result_key(result: SearchResult) -> Hashable:
-    return result.chunk_id if result.chunk_id is not None else (result.source, result.content)
+    return result.chunk_id if result.chunk_id is not None else result.evidence_key
  
 
 def replace_score(result: SearchResult, score: float) -> SearchResult:
-    return SearchResult(result.chunk_id, result.source, result.content, score)
+    return SearchResult(
+        chunk_id=result.chunk_id,
+        source=result.source,
+        source_index=result.source_index,
+        content=result.content,
+        score=score,
+        expanded_context_evidence=result.expanded_context_evidence,
+    )
 
 
 # 把数据库缓存的 embedding_json 字符串解析回数值向量列表；空值/非法 JSON/非数值列表都返回 None，调用方再决定现算补齐

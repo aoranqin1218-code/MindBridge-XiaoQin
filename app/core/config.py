@@ -50,7 +50,7 @@ class Settings(BaseSettings):
     chroma_snapshot_dir: str = "data/chroma-snapshots"
     chroma_snapshot_keep: int = 5
     embedding_timeout_seconds: float = 30.0
-    rag_eval_dataset: str = "app/rag_eval/mindbridge-rag-eval.json"
+    rag_eval_dataset: str = "app/rag_eval/mindbridge-rag-gold-v1.json"
     rag_eval_output: str = "target/rag-eval-report.json"
     rag_eval_enabled: bool = False
     rag_eval_exit_after_run: bool = False

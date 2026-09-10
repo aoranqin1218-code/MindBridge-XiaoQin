@@ -10,9 +10,10 @@ description = "MindBridge: 校园心理支持多 Agent 系统（学习项目）"
 requires-python = ">=3.10"
 # 依赖刻意不在此声明：沿用 requirements.txt，避免两处重复维护
 
-# 命令行快捷入口：pip install -e . 之后，可直接敲 mindbridge-harness 代替 python -m app.harness.runner
+# 命令行快捷入口：pip install -e . 之后，可直接使用下面的项目命令
 [project.scripts]
 mindbridge-harness = "app.harness.runner:main"
+mindbridge-rag-eval = "app.rag_eval.runner:main"
 
 # 只把 app 包纳入打包范围，避免误收 target/tests 等非包目录
 [tool.setuptools.packages.find]

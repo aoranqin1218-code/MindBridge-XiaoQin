@@ -18,6 +18,16 @@ class HarnessFailure(AssertionError):
     pass
 
 
+# 当前确定性 BM25 基线的回归下限；只用于发现退步，不代表线上效果目标
+RAG_BM25_QUALITY_THRESHOLDS = {
+    "hitRateAtK": 0.74,
+    "recallAtK": 0.69,
+    "precisionAtK": 0.20,
+    "mrrAtK": 0.60,
+    "ndcgAtK": 0.60,
+}
+
+
 @dataclass
 class CheckResult:
     name: str
@@ -164,7 +174,6 @@ def configure_environment() -> None:
     os.environ["TOOL_QUEUE_ENABLED"] = "false"
     os.environ["ALERT_EMAIL_DELIVERY_MODE"] = "log"
     os.environ["EXCEL_PATH"] = str((target_dir / "mindbridge-risk-ledger.xlsx").as_posix())
-    os.environ["RAG_EVAL_OUTPUT"] = str((target_dir / "rag-eval-report.json").as_posix())
 
 
 # 重建 Settings 与数据库引擎，打包成 HarnessContext。
@@ -490,38 +499,46 @@ def run_standard_skills_harness(context: HarnessContext) -> dict:
     }
 
 
+# 使用与独立评测命令相同的 BM25 运行入口，并把共享报告纳入工程验收结果
 def run_rag_harness(context: HarnessContext) -> dict:
-    from app.rag_eval.runner import evaluate_case
-    from app.services.knowledge import KnowledgeService
+    from app.rag_eval.runner import run_evaluation
 
-    db = context.session()
-    try:
-        service = KnowledgeService(db, context.settings)
-        dataset_path = context.root / context.settings.rag_eval_dataset
-        cases = json.loads(dataset_path.read_text(encoding="utf-8"))
-        results = [evaluate_case(service, case, context.settings.knowledge_top_k) for case in cases]
-        total = max(1, len(results))
-        hits = [item for item in results if item["hit"]]
-        metrics = {
-            "totalCases": len(results),
-            "topK": context.settings.knowledge_top_k,
-            "recallAtK": sum(item["recallAtK"] for item in results) / total,
-            "precisionAtK": sum(item["precisionAtK"] for item in results) / total,
-            "mrr": sum(item["reciprocalRank"] for item in results) / total,
-            "ndcgAtK": sum(item["ndcgAtK"] for item in results) / total,
-            "hitRate": len(hits) / total,
-        }
-        expect(metrics["totalCases"] >= 50, f"RAG dataset is too small: {metrics['totalCases']}")
-        expect(metrics["hitRate"] >= 0.95, f"RAG hitRate below threshold: {metrics['hitRate']:.3f}")
-        expect(metrics["recallAtK"] >= 0.95, f"RAG recallAtK below threshold: {metrics['recallAtK']:.3f}")
-        expect(metrics["mrr"] >= 0.75, f"RAG MRR below threshold: {metrics['mrr']:.3f}")
-        expect(metrics["ndcgAtK"] >= 0.75, f"RAG NDCG below threshold: {metrics['ndcgAtK']:.3f}")
-        report = {"createdAt": datetime.utcnow().isoformat(), "metrics": metrics, "results": results}
-        output = context.target_dir / "rag-eval-report.json"
-        output.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
-        return metrics | {"report": str(output)}
-    finally:
-        db.close()
+    dataset_path = context.root / context.settings.rag_eval_dataset
+    output_path = context.target_dir / "rag-eval-report.json"
+    report = run_evaluation(
+        mode="bm25",
+        dataset_path=dataset_path,
+        output_path=output_path,
+        settings=context.settings,
+        knowledge_dir=context.root / "app" / "knowledge",
+        top_k=context.settings.knowledge_top_k,
+    )
+
+    if report["status"] != "success":
+        failure = report["failure"]
+        raise HarnessFailure(f"RAG 评测失败 [{failure['code']}]：{failure['message']}")
+
+    expect(report["mode"] == "bm25", f"RAG Harness 运行模式错误：{report['mode']}")
+    expect(
+        report["retrievalConfig"]["vectorEnabled"] is False,
+        "RAG Harness 的 BM25 基线意外启用了向量检索",
+    )
+    metrics = report["metrics"]
+    for metric_name, minimum in RAG_BM25_QUALITY_THRESHOLDS.items():
+        actual = metrics[metric_name]
+        expect(
+            actual >= minimum,
+            f"RAG BM25 {metric_name} 低于回归下限：实际 {actual:.6f}，要求至少 {minimum:.2f}",
+        )
+    return {
+        "mode": report["mode"],
+        "datasetVersion": report["datasetVersion"],
+        "corpusFingerprints": report["corpusFingerprints"],
+        "retrievalConfig": report["retrievalConfig"],
+        "metrics": metrics,
+        "qualityThresholds": RAG_BM25_QUALITY_THRESHOLDS,
+        "report": str(output_path),
+    }
 
 
 def run_api_harness(context: HarnessContext) -> dict:

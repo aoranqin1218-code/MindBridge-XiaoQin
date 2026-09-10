@@ -1,0 +1,650 @@
+{
+  "schemaVersion": 1,
+  "datasetVersion": "2026-09-10.1",
+  "corpus": {
+    "structureFingerprint": "sha256:b418a8779e4add1d17ca860fcf2f60f4a736da0249c729601df503580f140ede",
+    "contentFingerprint": "sha256:238e4a9a59b0b18d9ec9c125a198031e79654dbe2786ad964bdcb0db38a5904b"
+  },
+  "labeling": {
+    "method": "manual-engineering-review",
+    "reviewer": "Codex（两遍工程复核）",
+    "notes": "基于当前 34 个知识分块完成两遍工程复核，覆盖全部 11 个内置来源；属于非领域专家标注。risk-high-severe-hopelessness 保留了知识库中英文风险分级差异的说明。"
+  },
+  "cases": [
+    {
+      "id": "risk-high-self-harm-direct",
+      "query": "学生明确说想自杀或者伤害自己时，系统应该怎么处理？",
+      "relevantEvidence": [
+        {"source": "risk-policy.md", "sourceIndex": 3},
+        {"source": "risk-policy.md", "sourceIndex": 4}
+      ],
+      "expectedSources": ["risk-policy.md"],
+      "diagnosticTerms": ["HIGH", "self-harm", "suicide", "alert"]
+    },
+    {
+      "id": "risk-high-suicide-plan",
+      "query": "如果学生说已经想好了自杀计划，这在风险策略里属于什么等级？",
+      "relevantEvidence": [
+        {"source": "risk-policy.md", "sourceIndex": 3}
+      ],
+      "expectedSources": ["risk-policy.md"],
+      "diagnosticTerms": ["HIGH", "suicide", "plans", "immediate danger"]
+    },
+    {
+      "id": "risk-high-hurt-others",
+      "query": "学生表示打算伤害别人，RAG 应该检索到哪类风险处置规则？",
+      "relevantEvidence": [
+        {"source": "risk-policy.md", "sourceIndex": 3}
+      ],
+      "expectedSources": ["risk-policy.md"],
+      "diagnosticTerms": ["HIGH", "hurt oneself or others", "immediate danger", "alert"]
+    },
+    {
+      "id": "risk-high-severe-hopelessness",
+      "query": "一个学生反复表达严重绝望，还暗示自己撑不下去了，风险等级应如何判断？",
+      "relevantEvidence": [
+        {
+          "source": "risk-policy.md",
+          "sourceIndex": 0,
+          "note": "英文总览把 severe hopelessness 列为 HIGH 信号"
+        },
+        {
+          "source": "risk-policy.md",
+          "sourceIndex": 2,
+          "note": "中文细则要求结合是否存在明确、立即的自伤计划区分 MEDIUM"
+        }
+      ],
+      "expectedSources": ["risk-policy.md"],
+      "diagnosticTerms": ["HIGH", "severe hopelessness", "immediate danger", "human support"]
+    },
+    {
+      "id": "risk-high-immediate-danger",
+      "query": "哪些语言会被视为 immediate danger，需要进入高风险流程？",
+      "relevantEvidence": [
+        {"source": "risk-policy.md", "sourceIndex": 3}
+      ],
+      "expectedSources": ["risk-policy.md"],
+      "diagnosticTerms": ["HIGH", "immediate danger", "self-harm", "suicide"]
+    },
+    {
+      "id": "risk-high-record-report",
+      "query": "高风险学生出现后，系统是否需要记录心理报告？",
+      "relevantEvidence": [
+        {"source": "risk-policy.md", "sourceIndex": 3}
+      ],
+      "expectedSources": ["risk-policy.md"],
+      "diagnosticTerms": ["HIGH", "records the report", "心理报告", "Excel"]
+    },
+    {
+      "id": "risk-high-excel-ledger",
+      "query": "HIGH 风险事件为什么要写入 Excel 台账？",
+      "relevantEvidence": [
+        {"source": "risk-policy.md", "sourceIndex": 3}
+      ],
+      "expectedSources": ["risk-policy.md"],
+      "diagnosticTerms": ["HIGH", "Excel ledger", "台账", "MCP"]
+    },
+    {
+      "id": "risk-high-alert-counselor",
+      "query": "当判断为高风险时，系统要不要通知辅导员或管理员？",
+      "relevantEvidence": [
+        {"source": "risk-policy.md", "sourceIndex": 3}
+      ],
+      "expectedSources": ["risk-policy.md"],
+      "diagnosticTerms": ["HIGH", "alert", "counselors", "administrators"]
+    },
+    {
+      "id": "risk-high-response-tone",
+      "query": "高风险回复的语气应该是怎样的？",
+      "relevantEvidence": [
+        {"source": "risk-policy.md", "sourceIndex": 3},
+        {"source": "risk-policy.md", "sourceIndex": 4}
+      ],
+      "expectedSources": ["risk-policy.md"],
+      "diagnosticTerms": ["empathetic", "direct", "human support", "稳定"]
+    },
+    {
+      "id": "risk-high-human-support",
+      "query": "遇到高风险表达时，回复里应该鼓励学生联系谁？",
+      "relevantEvidence": [
+        {"source": "risk-policy.md", "sourceIndex": 3},
+        {"source": "risk-policy.md", "sourceIndex": 4}
+      ],
+      "expectedSources": ["risk-policy.md"],
+      "diagnosticTerms": ["HIGH", "trusted person", "professional support", "immediate human support"]
+    },
+    {
+      "id": "risk-medium-persistent-anxiety",
+      "query": "学生长期持续焦虑但没有自伤计划，属于什么风险等级？",
+      "relevantEvidence": [
+        {"source": "risk-policy.md", "sourceIndex": 2}
+      ],
+      "expectedSources": ["risk-policy.md"],
+      "diagnosticTerms": ["MEDIUM", "persistent anxiety", "without immediate self-harm intent"]
+    },
+    {
+      "id": "risk-medium-insomnia-loneliness",
+      "query": "长期失眠、孤独和持续焦虑但没有自伤计划，属于什么风险等级？",
+      "relevantEvidence": [
+        {"source": "risk-policy.md", "sourceIndex": 2}
+      ],
+      "expectedSources": ["risk-policy.md"],
+      "diagnosticTerms": ["MEDIUM", "insomnia", "loneliness", "emotional distress"]
+    },
+    {
+      "id": "risk-medium-low-mood-pressure",
+      "query": "学生说最近情绪很低落、压力很大，但没有立即危险信号，应该检索什么风险定义？",
+      "relevantEvidence": [
+        {"source": "risk-policy.md", "sourceIndex": 2}
+      ],
+      "expectedSources": ["risk-policy.md"],
+      "diagnosticTerms": ["MEDIUM", "low mood", "pressure", "emotional distress"]
+    },
+    {
+      "id": "risk-medium-emotional-distress",
+      "query": "明显情绪困扰但没有明确自伤意图时，风险策略怎么分类？",
+      "relevantEvidence": [
+        {"source": "risk-policy.md", "sourceIndex": 2}
+      ],
+      "expectedSources": ["risk-policy.md"],
+      "diagnosticTerms": ["MEDIUM", "emotional distress", "without immediate self-harm intent"]
+    },
+    {
+      "id": "risk-medium-no-immediate-intent",
+      "query": "没有立即自伤意图这一点在中风险判断里有什么作用？",
+      "relevantEvidence": [
+        {"source": "risk-policy.md", "sourceIndex": 2},
+        {"source": "risk-policy.md", "sourceIndex": 3}
+      ],
+      "expectedSources": ["risk-policy.md"],
+      "diagnosticTerms": ["MEDIUM", "without immediate self-harm intent", "没有明确"]
+    },
+    {
+      "id": "risk-medium-cannot-sleep",
+      "query": "学生连续很多天睡不着并伴随焦虑，风险等级可能是什么？",
+      "relevantEvidence": [
+        {"source": "risk-policy.md", "sourceIndex": 2}
+      ],
+      "expectedSources": ["risk-policy.md"],
+      "diagnosticTerms": ["MEDIUM", "insomnia", "persistent anxiety", "失眠"]
+    },
+    {
+      "id": "risk-medium-lonely-pressure",
+      "query": "一个学生说自己很孤独、学业压力很重，但没有提到自杀，应归入哪类风险？",
+      "relevantEvidence": [
+        {"source": "risk-policy.md", "sourceIndex": 2}
+      ],
+      "expectedSources": ["risk-policy.md"],
+      "diagnosticTerms": ["MEDIUM", "loneliness", "pressure", "without immediate"]
+    },
+    {
+      "id": "risk-low-mild-stress",
+      "query": "普通聊天或轻微压力，没有自伤信号时属于什么风险等级？",
+      "relevantEvidence": [
+        {"source": "risk-policy.md", "sourceIndex": 2}
+      ],
+      "expectedSources": ["risk-policy.md"],
+      "diagnosticTerms": ["LOW", "mild stress", "no self-harm signals"]
+    },
+    {
+      "id": "risk-low-ordinary-anxiety",
+      "query": "一般焦虑但没有危险信号，风险策略会怎么标记？",
+      "relevantEvidence": [
+        {"source": "risk-policy.md", "sourceIndex": 2}
+      ],
+      "expectedSources": ["risk-policy.md"],
+      "diagnosticTerms": ["LOW", "ordinary anxiety", "no self-harm signals"]
+    },
+    {
+      "id": "risk-low-normal-chat",
+      "query": "学生只是普通聊天，系统是否应该进入高风险预警？",
+      "relevantEvidence": [
+        {"source": "risk-policy.md", "sourceIndex": 2}
+      ],
+      "expectedSources": ["risk-policy.md"],
+      "diagnosticTerms": ["LOW", "normal chat", "普通聊天"]
+    },
+    {
+      "id": "risk-low-no-self-harm",
+      "query": "没有 self-harm 或 suicide 信号的轻微压力如何定级？",
+      "relevantEvidence": [
+        {"source": "risk-policy.md", "sourceIndex": 2}
+      ],
+      "expectedSources": ["risk-policy.md"],
+      "diagnosticTerms": ["LOW", "self-harm", "suicide", "no self-harm signals"]
+    },
+    {
+      "id": "risk-levels-overview",
+      "query": "系统的风险等级一共有哪几类？",
+      "relevantEvidence": [
+        {"source": "risk-policy.md", "sourceIndex": 0},
+        {"source": "risk-policy.md", "sourceIndex": 1}
+      ],
+      "expectedSources": ["risk-policy.md"],
+      "diagnosticTerms": ["LOW", "MEDIUM", "HIGH", "风险等级"]
+    },
+    {
+      "id": "risk-compare-medium-high",
+      "query": "中风险和高风险的关键区别是什么？",
+      "relevantEvidence": [
+        {"source": "risk-policy.md", "sourceIndex": 2},
+        {"source": "risk-policy.md", "sourceIndex": 3}
+      ],
+      "expectedSources": ["risk-policy.md"],
+      "diagnosticTerms": ["MEDIUM", "HIGH", "immediate danger", "self-harm"]
+    },
+    {
+      "id": "risk-self-harm-signal",
+      "query": "出现 self-harm 信号时，风险规则会如何处理？",
+      "relevantEvidence": [
+        {"source": "risk-policy.md", "sourceIndex": 3}
+      ],
+      "expectedSources": ["risk-policy.md"],
+      "diagnosticTerms": ["self-harm", "HIGH", "alert", "immediate danger"]
+    },
+    {
+      "id": "risk-suicide-keyword",
+      "query": "suicide 这样的关键词在风险判断里意味着什么？",
+      "relevantEvidence": [
+        {"source": "risk-policy.md", "sourceIndex": 3}
+      ],
+      "expectedSources": ["risk-policy.md"],
+      "diagnosticTerms": ["suicide", "HIGH", "immediate danger"]
+    },
+    {
+      "id": "risk-alert-mcp-tools",
+      "query": "高风险预警通过什么工具链发送给辅导员或管理员？",
+      "relevantEvidence": [
+        {"source": "risk-policy.md", "sourceIndex": 3}
+      ],
+      "expectedSources": ["risk-policy.md"],
+      "diagnosticTerms": ["MCP tools", "alert", "counselors", "administrators"]
+    },
+    {
+      "id": "risk-ledger-mcp-tools",
+      "query": "风险策略里提到 MCP 工具和 Excel 台账的关系是什么？",
+      "relevantEvidence": [
+        {"source": "risk-policy.md", "sourceIndex": 3}
+      ],
+      "expectedSources": ["risk-policy.md"],
+      "diagnosticTerms": ["MCP tools", "Excel ledger", "records the report"]
+    },
+    {
+      "id": "risk-admin-alert",
+      "query": "管理员在高风险闭环里会收到什么？",
+      "relevantEvidence": [
+        {"source": "risk-policy.md", "sourceIndex": 3}
+      ],
+      "expectedSources": ["risk-policy.md"],
+      "diagnosticTerms": ["alert", "administrators", "HIGH"]
+    },
+    {
+      "id": "risk-trusted-person",
+      "query": "为什么高风险回复要建议学生马上联系可信任的人？",
+      "relevantEvidence": [
+        {"source": "risk-policy.md", "sourceIndex": 3},
+        {"source": "risk-policy.md", "sourceIndex": 4}
+      ],
+      "expectedSources": ["risk-policy.md"],
+      "diagnosticTerms": ["HIGH", "trusted person", "immediate human support"]
+    },
+    {
+      "id": "risk-professional-support",
+      "query": "风险处置规则中什么时候需要鼓励专业支持？",
+      "relevantEvidence": [
+        {"source": "risk-policy.md", "sourceIndex": 2},
+        {"source": "risk-policy.md", "sourceIndex": 3}
+      ],
+      "expectedSources": ["risk-policy.md"],
+      "diagnosticTerms": ["HIGH", "professional support", "human support"]
+    },
+    {
+      "id": "support-anxiety-grounding",
+      "query": "学生焦虑时，可以给哪些 grounding 五感着陆建议？",
+      "relevantEvidence": [
+        {"source": "anxiety-panic-grounding.md", "sourceIndex": 0}
+      ],
+      "expectedSources": ["anxiety-panic-grounding.md"],
+      "diagnosticTerms": ["anxiety", "grounding", "五感着陆"]
+    },
+    {
+      "id": "support-anxiety-breathing",
+      "query": "学生紧张或恐慌时，知识库建议使用什么呼吸相关方法？",
+      "relevantEvidence": [
+        {"source": "anxiety-panic-grounding.md", "sourceIndex": 0}
+      ],
+      "expectedSources": ["anxiety-panic-grounding.md"],
+      "diagnosticTerms": ["anxiety", "breathing", "呼吸练习"]
+    },
+    {
+      "id": "support-anxiety-sleep-routine",
+      "query": "焦虑学生可以从睡眠和作息上做哪些调整？",
+      "relevantEvidence": [
+        {"source": "sleep-routine-self-care.md", "sourceIndex": 0}
+      ],
+      "expectedSources": ["sleep-routine-self-care.md"],
+      "diagnosticTerms": ["sleep", "routine", "规律"]
+    },
+    {
+      "id": "support-anxiety-walk",
+      "query": "压力过大时，除了呼吸练习，系统还能建议哪些稳定情绪的小方法？",
+      "relevantEvidence": [
+        {"source": "campus-mental-health.md", "sourceIndex": 3}
+      ],
+      "expectedSources": ["campus-mental-health.md"],
+      "diagnosticTerms": ["grounding", "breathing", "短暂散步", "减少刺激源"]
+    },
+    {
+      "id": "support-anxiety-overwhelmed",
+      "query": "当学生说自己压力大到快崩溃，但没有危险信号时，RAG 应该补充哪些支持建议？",
+      "relevantEvidence": [
+        {"source": "anxiety-panic-grounding.md", "sourceIndex": 0}
+      ],
+      "expectedSources": ["anxiety-panic-grounding.md"],
+      "diagnosticTerms": ["压力过大", "grounding", "breathing", "routine"]
+    },
+    {
+      "id": "support-anxiety-practical-guidance",
+      "query": "心理助手对焦虑学生的建议应该偏向抽象安慰还是可执行方法？",
+      "relevantEvidence": [
+        {"source": "anxiety-panic-grounding.md", "sourceIndex": 0},
+        {"source": "anxiety-panic-grounding.md", "sourceIndex": 1}
+      ],
+      "expectedSources": ["anxiety-panic-grounding.md"],
+      "diagnosticTerms": ["practical guidance", "可执行", "grounding", "breathing"]
+    },
+    {
+      "id": "support-low-mood-small-actions",
+      "query": "学生情绪低落时，系统可以鼓励哪些小行动？",
+      "relevantEvidence": [
+        {"source": "low-mood-depression-support.md", "sourceIndex": 0}
+      ],
+      "expectedSources": ["low-mood-depression-support.md"],
+      "diagnosticTerms": ["low mood", "small actions", "小行动"]
+    },
+    {
+      "id": "support-low-mood-social-connection",
+      "query": "低落和孤独时，知识库是否建议建立社交连接？",
+      "relevantEvidence": [
+        {"source": "low-mood-depression-support.md", "sourceIndex": 1}
+      ],
+      "expectedSources": ["low-mood-depression-support.md"],
+      "diagnosticTerms": ["low mood", "social connection", "社交连接"]
+    },
+    {
+      "id": "support-low-mood-journaling",
+      "query": "学生心情低落时，日记记录 journaling 有被知识库提到吗？",
+      "relevantEvidence": [
+        {"source": "low-mood-depression-support.md", "sourceIndex": 1}
+      ],
+      "expectedSources": ["low-mood-depression-support.md"],
+      "diagnosticTerms": ["low mood", "journaling", "日记记录"]
+    },
+    {
+      "id": "support-low-mood-professional-support",
+      "query": "低落状态持续时，系统应该建议学生寻求什么支持？",
+      "relevantEvidence": [
+        {"source": "low-mood-depression-support.md", "sourceIndex": 1}
+      ],
+      "expectedSources": ["low-mood-depression-support.md"],
+      "diagnosticTerms": ["low mood", "professional support", "专业支持"]
+    },
+    {
+      "id": "support-low-mood-eating-sleep",
+      "query": "对轻中度抑郁倾向，知识库有没有提到规律饮食睡眠？",
+      "relevantEvidence": [
+        {"source": "low-mood-depression-support.md", "sourceIndex": 0}
+      ],
+      "expectedSources": ["low-mood-depression-support.md"],
+      "diagnosticTerms": ["低落", "规律饮食睡眠", "professional support"]
+    },
+    {
+      "id": "support-loneliness-connection",
+      "query": "学生说自己很孤独时，心理助手可以给什么方向的支持？",
+      "relevantEvidence": [
+        {"source": "low-mood-depression-support.md", "sourceIndex": 1}
+      ],
+      "expectedSources": ["low-mood-depression-support.md"],
+      "diagnosticTerms": ["孤独", "social connection", "professional support"]
+    },
+    {
+      "id": "support-nonjudgmental-tone",
+      "query": "校园心理助手的基本回应风格应该是什么样的？",
+      "relevantEvidence": [
+        {"source": "campus-mental-health.md", "sourceIndex": 0},
+        {"source": "campus-mental-health.md", "sourceIndex": 3}
+      ],
+      "expectedSources": ["campus-mental-health.md"],
+      "diagnosticTerms": ["calm", "non-judgmental", "practical guidance", "平静"]
+    },
+    {
+      "id": "support-calm-practical",
+      "query": "MindBridge 为什么要提供平静、非评判、可执行的陪伴建议？",
+      "relevantEvidence": [
+        {"source": "campus-mental-health.md", "sourceIndex": 0},
+        {"source": "campus-mental-health.md", "sourceIndex": 3}
+      ],
+      "expectedSources": ["campus-mental-health.md"],
+      "diagnosticTerms": ["supportive", "calm", "non-judgmental", "可执行"]
+    },
+    {
+      "id": "support-trusted-human-help",
+      "query": "症状严重或持续时，知识库建议学生联系哪些人或机构？",
+      "relevantEvidence": [
+        {"source": "counselor-referral-and-resources.md", "sourceIndex": 0}
+      ],
+      "expectedSources": ["counselor-referral-and-resources.md"],
+      "diagnosticTerms": ["trusted human help", "辅导员", "心理中心", "紧急服务"]
+    },
+    {
+      "id": "support-serious-persistent",
+      "query": "当学生的症状 serious or persistent 时，助手应该怎么引导？",
+      "relevantEvidence": [
+        {"source": "counselor-referral-and-resources.md", "sourceIndex": 0}
+      ],
+      "expectedSources": ["counselor-referral-and-resources.md"],
+      "diagnosticTerms": ["serious", "persistent", "trusted human help"]
+    },
+    {
+      "id": "support-emergency-services",
+      "query": "高风险或立即危险时，校园心理健康知识里提到哪些紧急支持？",
+      "relevantEvidence": [
+        {"source": "counselor-referral-and-resources.md", "sourceIndex": 1}
+      ],
+      "expectedSources": ["counselor-referral-and-resources.md"],
+      "diagnosticTerms": ["immediate danger", "emergency services", "trusted person"]
+    },
+    {
+      "id": "support-counselor-channel",
+      "query": "学生出现自伤或自杀风险时，知识库提到要通知哪个渠道？",
+      "relevantEvidence": [
+        {"source": "campus-mental-health.md", "sourceIndex": 4}
+      ],
+      "expectedSources": ["campus-mental-health.md"],
+      "diagnosticTerms": ["self-harm", "suicide", "configured counselor channel"]
+    },
+    {
+      "id": "boundary-no-diagnosis",
+      "query": "心理助手能不能替代专业咨询师进行诊断？",
+      "relevantEvidence": [
+        {"source": "privacy-boundaries-and-ethics.md", "sourceIndex": 0}
+      ],
+      "expectedSources": ["privacy-boundaries-and-ethics.md"],
+      "diagnosticTerms": ["must not diagnose", "不能诊断疾病", "professional counselor"]
+    },
+    {
+      "id": "boundary-no-medication",
+      "query": "学生问能不能吃药时，心理助手可以开药或指导用药吗？",
+      "relevantEvidence": [
+        {"source": "privacy-boundaries-and-ethics.md", "sourceIndex": 1}
+      ],
+      "expectedSources": ["privacy-boundaries-and-ethics.md"],
+      "diagnosticTerms": ["prescribe medication", "不能开药", "指导用药"]
+    },
+    {
+      "id": "boundary-not-replace-counselor",
+      "query": "MindBridge 能不能替代学校心理咨询师？",
+      "relevantEvidence": [
+        {"source": "privacy-boundaries-and-ethics.md", "sourceIndex": 1}
+      ],
+      "expectedSources": ["privacy-boundaries-and-ethics.md"],
+      "diagnosticTerms": ["must not replace", "professional counselor", "不能替代"]
+    },
+    {
+      "id": "boundary-professional-counselor",
+      "query": "涉及专业治疗判断时，系统应该让学生找谁？",
+      "relevantEvidence": [
+        {"source": "privacy-boundaries-and-ethics.md", "sourceIndex": 1}
+      ],
+      "expectedSources": ["privacy-boundaries-and-ethics.md"],
+      "diagnosticTerms": ["professional counselor", "professional support", "专业支持"]
+    },
+    {
+      "id": "boundary-illness-diagnose",
+      "query": "如果学生问自己是不是得了某种心理疾病，助手的边界是什么？",
+      "relevantEvidence": [
+        {"source": "campus-mental-health.md", "sourceIndex": 2}
+      ],
+      "expectedSources": ["campus-mental-health.md"],
+      "diagnosticTerms": ["must not diagnose illnesses", "不能诊断疾病", "professional counselor"]
+    },
+    {
+      "id": "boundary-prescribe-medication",
+      "query": "知识库里对 prescribe medication 有什么限制？",
+      "relevantEvidence": [
+        {"source": "privacy-boundaries-and-ethics.md", "sourceIndex": 1}
+      ],
+      "expectedSources": ["privacy-boundaries-and-ethics.md"],
+      "diagnosticTerms": ["prescribe medication", "must not", "不能开药"]
+    },
+    {
+      "id": "support-campus-assistant-role",
+      "query": "MindBridge 在校园心理健康场景里的角色是什么？",
+      "relevantEvidence": [
+        {"source": "campus-mental-health.md", "sourceIndex": 0},
+        {"source": "campus-mental-health.md", "sourceIndex": 2}
+      ],
+      "expectedSources": ["campus-mental-health.md"],
+      "diagnosticTerms": ["supportive", "campus mental-health assistant", "陪伴建议"]
+    },
+    {
+      "id": "support-risk-signals-human-help",
+      "query": "出现危险信号时，校园心理助手除了安抚还应提醒什么？",
+      "relevantEvidence": [
+        {"source": "counselor-referral-and-resources.md", "sourceIndex": 1}
+      ],
+      "expectedSources": ["counselor-referral-and-resources.md"],
+      "diagnosticTerms": ["危险信号", "trusted human help", "emergency services"]
+    },
+    {
+      "id": "support-anxiety-routine",
+      "query": "routine 日常作息在焦虑支持建议中有什么作用？",
+      "relevantEvidence": [
+        {"source": "sleep-routine-self-care.md", "sourceIndex": 0}
+      ],
+      "expectedSources": ["sleep-routine-self-care.md"],
+      "diagnosticTerms": ["anxiety", "routine", "日常作息"]
+    },
+    {
+      "id": "support-grounding-breathing-sleep",
+      "query": "焦虑场景下，grounding、breathing 和 sleep 分别属于哪类建议？",
+      "relevantEvidence": [
+        {"source": "anxiety-panic-grounding.md", "sourceIndex": 0},
+        {"source": "sleep-routine-self-care.md", "sourceIndex": 0}
+      ],
+      "expectedSources": ["anxiety-panic-grounding.md", "sleep-routine-self-care.md"],
+      "diagnosticTerms": ["grounding", "breathing", "sleep", "anxiety"]
+    },
+    {
+      "id": "support-low-mood-routine",
+      "query": "情绪低落时，除了社交连接和日记，还可以提醒学生保持哪些生活规律？",
+      "relevantEvidence": [
+        {"source": "low-mood-depression-support.md", "sourceIndex": 0}
+      ],
+      "expectedSources": ["low-mood-depression-support.md"],
+      "diagnosticTerms": ["low mood", "journaling", "规律饮食睡眠", "social connection"]
+    },
+    {
+      "id": "support-medium-depression-tendency",
+      "query": "轻中度抑郁倾向时，知识库建议的支持方式有哪些？",
+      "relevantEvidence": [
+        {"source": "low-mood-depression-support.md", "sourceIndex": 0},
+        {"source": "low-mood-depression-support.md", "sourceIndex": 1}
+      ],
+      "expectedSources": ["low-mood-depression-support.md"],
+      "diagnosticTerms": ["轻中度抑郁倾向", "small actions", "social connection", "professional support"]
+    },
+    {
+      "id": "support-academic-task-overload",
+      "query": "事情太多、完全学不进去时，可以怎样拆解学业压力并开始行动？",
+      "relevantEvidence": [
+        {"source": "academic-stress-and-burnout.md", "sourceIndex": 0}
+      ],
+      "expectedSources": ["academic-stress-and-burnout.md"],
+      "diagnosticTerms": ["压力拆解", "最小行动", "10 分钟启动法"]
+    },
+    {
+      "id": "support-academic-burnout",
+      "query": "长期学习疲惫、麻木和效率下降时，怎样识别并应对学业倦怠？",
+      "relevantEvidence": [
+        {"source": "academic-stress-and-burnout.md", "sourceIndex": 1}
+      ],
+      "expectedSources": ["academic-stress-and-burnout.md"],
+      "diagnosticTerms": ["burnout", "检查负荷", "现实支持"]
+    },
+    {
+      "id": "support-adjustment-new-student",
+      "query": "新生想家、社交不适又不熟悉校园时，可以从哪些小步骤开始适应？",
+      "relevantEvidence": [
+        {"source": "adjustment-and-transition.md", "sourceIndex": 0}
+      ],
+      "expectedSources": ["adjustment-and-transition.md"],
+      "diagnosticTerms": ["新生适应", "基本锚点", "低压力社交"]
+    },
+    {
+      "id": "support-adjustment-graduation",
+      "query": "毕业和就业结果让学生怀疑自我价值时，助手可以怎样帮助他准备下一步？",
+      "relevantEvidence": [
+        {"source": "adjustment-and-transition.md", "sourceIndex": 1}
+      ],
+      "expectedSources": ["adjustment-and-transition.md"],
+      "diagnosticTerms": ["身份焦虑", "自我价值", "短期行动清单"]
+    },
+    {
+      "id": "support-exam-review-plan",
+      "query": "考前一周复习内容太多时，应该怎样安排优先级和学习任务？",
+      "relevantEvidence": [
+        {"source": "exam-season-guidance.md", "sourceIndex": 0}
+      ],
+      "expectedSources": ["exam-season-guidance.md"],
+      "diagnosticTerms": ["高频重点", "基础保分", "学习块"]
+    },
+    {
+      "id": "support-exam-day-panic",
+      "query": "考试当天心慌、手抖、脑子空白时，可以先做什么？",
+      "relevantEvidence": [
+        {"source": "exam-season-guidance.md", "sourceIndex": 1}
+      ],
+      "expectedSources": ["exam-season-guidance.md"],
+      "diagnosticTerms": ["慢呼气", "双脚踩稳", "先写会做的题"]
+    },
+    {
+      "id": "support-roommate-conflict",
+      "query": "室友因作息和噪音发生冲突时，怎样进行低攻击沟通？",
+      "relevantEvidence": [
+        {"source": "relationships-and-family.md", "sourceIndex": 0}
+      ],
+      "expectedSources": ["relationships-and-family.md"],
+      "diagnosticTerms": ["室友冲突", "低攻击表达", "具体事件"]
+    },
+    {
+      "id": "support-family-boundaries",
+      "query": "面对父母在成绩、专业和生活上的高期待时，可以怎样建立小边界？",
+      "relevantEvidence": [
+        {"source": "relationships-and-family.md", "sourceIndex": 1}
+      ],
+      "expectedSources": ["relationships-and-family.md"],
+      "diagnosticTerms": ["家庭压力", "小边界", "学习安排"]
+    }
+  ]
+}

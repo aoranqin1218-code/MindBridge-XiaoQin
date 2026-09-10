@@ -342,14 +342,30 @@ curl -u admin:admin123 \
 
 ## RAG 评测
 
-```bash
-AI_PROVIDER=mock python -m app.rag_eval.runner
+项目首次拉取或 `pyproject.toml` 的命令入口发生变化后，执行一次可编辑安装：
+
+```powershell
+python -m pip install -e .
 ```
 
-评测报告输出到：
+之后在已激活的项目虚拟环境中运行 BM25 评测：
+
+```powershell
+mindbridge-rag-eval --mode bm25
+```
+
+BM25 评测报告输出到：
 
 ```text
-target/rag-eval-report.json
+target/rag/bm25/rag-eval-report.json
+```
+
+当前可复现 BM25 基线和失败案例复核记录在 `app/rag_eval/mindbridge-rag-bm25-baseline-review.md`。`mindbridge-harness --suite rag` 会在共享评测完成后执行五项回归门槛；这些门槛只用于发现当前 BM25 基线退步。
+
+真实 Hybrid 评测需要显式授权外部 embedding 调用：
+
+```powershell
+mindbridge-rag-eval --mode hybrid --allow-external
 ```
 
 ## 单元测试
@@ -383,8 +399,9 @@ python -m unittest discover -s tests
 - API Harness：健康检查、认证授权、SSE 聊天、管理员知识库接口。
 - Tool Queue Harness：Excel / case / alert 依赖、幂等、限流和 dead letter。
 
-```bash
-python3 -m app.harness.runner
+```powershell
+mindbridge-harness
+mindbridge-harness --suite rag
 ```
 
 报告输出到：
