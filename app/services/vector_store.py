@@ -15,6 +15,8 @@ from app.models.entities import KnowledgeChunk
 PRIMARY_RETRIEVAL_LABEL = "Chroma vector + BM25 hybrid + local reranker"
 # 降级检索方案标签：仅本地 BM25 + 融合分数重排（Chroma/向量不可用时的兜底方案）
 FALLBACK_RETRIEVAL_LABEL = "local BM25 + hybrid_score reranker"
+# Embedding 单批最多发送 20 条，兼容当前百炼模型限制，也适用于原 OpenAI 兼容接口
+EMBEDDING_BATCH_SIZE = 20
 
 
 # 向量库不可用异常：缺 OPENAI_API_KEY、缺 chromadb 依赖、向量数量不匹配等场景抛出，调用方可据此降级到 BM25
@@ -33,7 +35,7 @@ class VectorSearchHit:
 
 
 class ChromaKnowledgeStore:
-    """主 RAG 路径：OpenAI text-embedding-3-small 生成的向量，存储在 Chroma 中并用于查询。"""
+    """主 RAG 路径：使用配置的兼容 Embedding 接口生成向量，并存入 Chroma 查询。"""
 
     def __init__(self, settings: Settings):
         self.settings = settings
@@ -45,16 +47,26 @@ class ChromaKnowledgeStore:
         
         if not settings.openai_api_key:
             if settings.knowledge_vector_required:
-                raise VectorStoreUnavailable("缺少 OPENAI_API_KEY，无法启用 Chroma + text-embedding-3-small 主检索方案")
-            self.error = f"缺少 OPENAI_API_KEY，Chroma + text-embedding-3-small 不可用，已回退到{FALLBACK_RETRIEVAL_LABEL}"
+                raise VectorStoreUnavailable(
+                    f"缺少 OPENAI_API_KEY，无法启用 Chroma + {settings.openai_embedding_model} 主检索方案"
+                )
+            self.error = (
+                f"缺少 OPENAI_API_KEY，Chroma + {settings.openai_embedding_model} 不可用，"
+                f"已回退到{FALLBACK_RETRIEVAL_LABEL}"
+            )
             return
         
         try:
             import chromadb
         except ImportError as exc:
             if settings.knowledge_vector_required:
-                raise VectorStoreUnavailable("缺少 chromadb 依赖，无法启用 Chroma + text-embedding-3-small 主检索方案") from exc
-            self.error = f"缺少 chromadb 依赖，Chroma + text-embedding-3-small 不可用，已回退到{FALLBACK_RETRIEVAL_LABEL}"
+                raise VectorStoreUnavailable(
+                    f"缺少 chromadb 依赖，无法启用 Chroma + {settings.openai_embedding_model} 主检索方案"
+                ) from exc
+            self.error = (
+                f"缺少 chromadb 依赖，Chroma + {settings.openai_embedding_model} 不可用，"
+                f"已回退到{FALLBACK_RETRIEVAL_LABEL}"
+            )
             return
 
         # 准备 Chroma 持久化存储：
@@ -158,7 +170,9 @@ class ChromaKnowledgeStore:
     # 把一批文本向量化（公开入口）：先检查向量能力，再调 _embed 调 OpenAI 接口，返回每段文本对应的向量列表
     def embed_texts(self, texts: list[str]) -> list[list[float]]:
         if not self.can_embed:
-            raise VectorStoreUnavailable(self.error or "Chroma + text-embedding-3-small 主检索方案不可用")
+            raise VectorStoreUnavailable(
+                self.error or f"Chroma + {self.settings.openai_embedding_model} 主检索方案不可用"
+            )
         return self._embed(texts)
 
     # 把 Chroma 持久化目录整体复制成"时间戳命名的快照"备份（写入后调用，损坏可恢复），并修剪只留最近 N 个；不可用时返回 None
@@ -186,34 +200,33 @@ class ChromaKnowledgeStore:
         # Chroma 的 Collection 类有 count() 方法，返回集合里有多少条向量记录
         return int(self.collection.count())                                 
 
-    # 调 OpenAI embeddings 接口把文本向量化的真实实现：按 index 对齐返回向量，数量不匹配或含空向量则抛 VectorStoreUnavailable
+    # 调 OpenAI 兼容 embeddings 接口把文本向量化：按 index 对齐返回，数量不匹配或含空向量则失败
     def _embed(self, texts: list[str]) -> list[list[float]]:
-        payload = {
-            "model": self.settings.openai_embedding_model,
-            "input": [text if text.strip() else " " for text in texts],
-        }
-
         headers = {"Authorization": f"Bearer {self.settings.openai_api_key}"}
+        embeddings: list[list[float]] = []
+        normalized = [text if text.strip() else " " for text in texts]
 
-        response = httpx.post(
-            f"{self.settings.openai_base_url}/embeddings",
-            headers=headers,
-            json=payload,
-            timeout=self.settings.embedding_timeout_seconds,
-        )
+        for start in range(0, len(normalized), EMBEDDING_BATCH_SIZE):
+            batch = normalized[start : start + EMBEDDING_BATCH_SIZE]
+            response = httpx.post(
+                f"{self.settings.openai_base_url}/embeddings",
+                headers=headers,
+                json={"model": self.settings.openai_embedding_model, "input": batch},
+                timeout=self.settings.embedding_timeout_seconds,
+            )
+            response.raise_for_status()
 
-        response.raise_for_status()
+            # 每批返回的 index 都从 0 开始，因此先在批内排序，再按批次顺序追加
+            rows = sorted(response.json().get("data", []), key=lambda item: item.get("index", 0))
+            batch_embeddings = [row.get("embedding") for row in rows]
+            if len(batch_embeddings) != len(batch) or any(not embedding for embedding in batch_embeddings):
+                raise VectorStoreUnavailable("Embedding 接口返回向量数量不匹配")
+            embeddings.extend(
+                [float(value) for value in embedding]
+                for embedding in batch_embeddings
+            )
 
-        # response.json() 是 httpx 响应对象的方法 , 内部包装了一层json.loads()
-        # 因为后面要按位置取向量，index 顺序必须和输入顺序对上
-        rows = sorted(response.json().get("data", []), key=lambda item: item.get("index", 0))
-
-        # 按排序后的顺序取 embedding
-        embeddings = [row.get("embedding") for row in rows]
-
-        if len(embeddings) != len(texts) or any(not embedding for embedding in embeddings):
-            raise VectorStoreUnavailable("OpenAI embeddings 接口返回向量数量不匹配")
-        return [[float(value) for value in embedding] for embedding in embeddings]
+        return embeddings
 
     # 把配置里的路径解析为绝对路径：本身是绝对路径直接用，相对路径基于项目根目录拼接（配置里常用相对路径，运行时代码要绝对路径）
     def _resolve_path(self, value: str) -> Path:

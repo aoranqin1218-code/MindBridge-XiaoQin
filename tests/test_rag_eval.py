@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from unittest.mock import Mock, patch
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -14,7 +15,9 @@ from app.harness.runner import (
     HarnessContext,
     HarnessFailure,
     RAG_BM25_QUALITY_THRESHOLDS,
+    resolve_suites,
     run_rag_harness,
+    run_rag_hybrid_harness,
 )
 from app.models.entities import KnowledgeChunk
 from app.rag_eval.dataset import (
@@ -40,7 +43,7 @@ from app.rag_eval.metrics import MetricInputError, compute_retrieval_metrics, ma
 from app.rag_eval.runner import run_evaluation
 from app.services.knowledge import KnowledgeService, SearchResult, replace_score, result_key
 from app.services.trace import _json
-from app.services.vector_store import VectorSearchHit
+from app.services.vector_store import ChromaKnowledgeStore, VectorSearchHit
 
 
 class StubVectorStore:
@@ -67,6 +70,84 @@ class StubKnowledgeService:
     # 按请求数量返回预设的知识检索结果
     def retrieve(self, query: str, top_k: int) -> list[SearchResult]:
         return self.results[:top_k]
+
+
+# 为 runner 的 Hybrid 成功路径提供可控向量存储，并记录索引与查询调用
+class RunnerVectorStore:
+    instances: list["RunnerVectorStore"] = []
+
+    # 保存评测配置和调用记录，供测试证明向量链路实际执行
+    def __init__(self, settings: Settings):
+        self.settings = settings
+        self.can_embed = True
+        self.error = ""
+        self.chunks: list[KnowledgeChunk] = []
+        self.embed_calls: list[list[str]] = []
+        self.sync_count = 0
+        self.__class__.instances.append(self)
+
+    # 为知识分块和查询返回固定向量，同时记录每次输入
+    def embed_texts(self, texts: list[str]) -> list[list[float]]:
+        self.embed_calls.append(list(texts))
+        return [[0.1] for _ in texts]
+
+    # 保存重建索引时收到的分块，后续查询固定返回第一块
+    def sync_chunks(self, chunks: list[KnowledgeChunk], embeddings: list[list[float]]) -> int:
+        self.chunks = list(chunks)
+        self.sync_count += 1
+        return len(self.chunks)
+
+    # 返回当前假索引中的分块数量
+    def count(self) -> int:
+        return len(self.chunks)
+
+    # 验证假索引与数据库使用相同的分块主键
+    def has_exact_chunk_ids(self, chunks: list[KnowledgeChunk]) -> bool:
+        return {chunk.id for chunk in self.chunks} == {chunk.id for chunk in chunks}
+
+    # 返回第一条向量命中，让无关键词重合的问题仍能命中 Gold 证据
+    def query(self, query_embedding: list[float], top_k: int) -> list[VectorSearchHit]:
+        if not self.chunks or top_k <= 0:
+            return []
+        chunk = self.chunks[0]
+        return [
+            VectorSearchHit(
+                chunk_id=chunk.id,
+                source=chunk.source,
+                source_index=chunk.source_index,
+                content=chunk.content,
+                score=0.95,
+            )
+        ]
+
+
+class EmbeddingBatchTests(unittest.TestCase):
+    # 验证超过百炼单批上限的文本会稳定拆批，并保持返回向量与输入顺序一致
+    def test_embedding_requests_are_split_into_batches_of_twenty(self):
+        store = ChromaKnowledgeStore.__new__(ChromaKnowledgeStore)
+        store.settings = Settings(
+            openai_api_key="test-key",
+            openai_base_url="https://example.test/v1",
+            openai_embedding_model="test-embedding",
+        )
+        texts = [f"text-{index}" for index in range(45)]
+
+        # 按每批输入生成可识别向量，模拟兼容 embeddings 接口
+        def post(url: str, headers: dict, json: dict, timeout: float):
+            rows = [
+                {"index": index, "embedding": [float(text.removeprefix("text-"))]}
+                for index, text in enumerate(json["input"])
+            ]
+            response = Mock()
+            response.raise_for_status.return_value = None
+            response.json.return_value = {"data": rows}
+            return response
+
+        with patch("app.services.vector_store.httpx.post", side_effect=post) as request:
+            embeddings = store._embed(texts)
+
+        self.assertEqual([len(call.kwargs["json"]["input"]) for call in request.call_args_list], [20, 20, 5])
+        self.assertEqual(embeddings, [[float(index)] for index in range(45)])
 
 
 class CorpusFingerprintTests(unittest.TestCase):
@@ -714,6 +795,51 @@ class EvaluationRunnerTests(unittest.TestCase):
         self.assertEqual(report["failure"]["stage"], "preflight")
         self.assertEqual(report["failure"]["code"], "external_call_not_authorized")
 
+    # 验证 Hybrid 成功路径会重建隔离索引、执行查询向量化，并凭向量命中 Gold
+    def test_hybrid_run_uses_vector_retrieval_and_isolated_chroma(self):
+        settings = Settings(
+            openai_api_key="test-key",
+            chroma_persist_dir="data/chroma",
+            chroma_snapshot_dir="data/chroma-snapshots",
+        )
+        RunnerVectorStore.instances.clear()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            knowledge_dir, dataset_path = self.write_gold_dataset(root, settings)
+            payload = json.loads(dataset_path.read_text(encoding="utf-8"))
+            payload["cases"][0]["query"] = "请给我一种能缓和紧张的方法"
+            dataset_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            output_path = root / "reports" / "hybrid.json"
+
+            with patch("app.services.knowledge.ChromaKnowledgeStore", RunnerVectorStore):
+                report = run_evaluation(
+                    mode="hybrid",
+                    dataset_path=dataset_path,
+                    output_path=output_path,
+                    settings=settings,
+                    knowledge_dir=knowledge_dir,
+                    top_k=2,
+                    allow_external=True,
+                )
+
+            written = json.loads(output_path.read_text(encoding="utf-8"))
+            vector_store = RunnerVectorStore.instances[-1]
+            expected_chroma = str((output_path.parent / "chroma").resolve())
+            expected_snapshots = str((output_path.parent / "chroma-snapshots").resolve())
+
+        self.assertEqual(report, written)
+        self.assertEqual(report["status"], "success")
+        self.assertEqual(report["mode"], "hybrid")
+        self.assertTrue(report["retrievalConfig"]["vectorEnabled"])
+        self.assertTrue(report["retrievalConfig"]["vectorRequired"])
+        self.assertEqual(report["retrievalConfig"]["chromaPersistDir"], expected_chroma)
+        self.assertEqual(report["retrievalConfig"]["chromaSnapshotDir"], expected_snapshots)
+        self.assertEqual(report["metrics"]["hitRateAtK"], 1.0)
+        self.assertTrue(report["cases"][0]["retrieved"][0]["relevant"])
+        self.assertEqual(vector_store.sync_count, 1)
+        self.assertEqual(len(vector_store.embed_calls), 2)
+        self.assertEqual(vector_store.embed_calls[-1], ["请给我一种能缓和紧张的方法"])
+
     # 验证 Engineering Harness 直接消费共享 BM25 报告，不再维护旧数据和旧指标公式
     def test_harness_uses_shared_bm25_evaluation_report(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -770,6 +896,89 @@ class EvaluationRunnerTests(unittest.TestCase):
                 "hitRateAtK 低于回归下限",
             ):
                 run_rag_harness(context)
+
+    # 验证默认 Harness 不调用外部 Hybrid，只有显式 rag-hybrid 才选择该套件
+    def test_hybrid_harness_suite_is_explicit_only(self):
+        default_names = [name for name, _ in resolve_suites(None)]
+        hybrid_names = [name for name, _ in resolve_suites(["rag-hybrid"])]
+
+        self.assertNotIn("RAG Hybrid Harness", default_names)
+        self.assertEqual(hybrid_names, ["RAG Hybrid Harness"])
+
+    # 验证 Hybrid Harness 使用同批 BM25 对照，并输出指标与逐题变化
+    def test_hybrid_harness_compares_shared_reports(self):
+        fingerprints = {
+            "evidenceCount": 1,
+            "structureFingerprint": "sha256:" + "1" * 64,
+            "contentFingerprint": "sha256:" + "2" * 64,
+        }
+        bm25_metrics = {
+            "caseCount": 2,
+            "hitRateAtK": 0.75,
+            "recallAtK": 0.70,
+            "precisionAtK": 0.20,
+            "mrrAtK": 0.61,
+            "ndcgAtK": 0.61,
+        }
+        hybrid_metrics = {
+            "caseCount": 2,
+            "hitRateAtK": 1.0,
+            "recallAtK": 0.85,
+            "precisionAtK": 0.25,
+            "mrrAtK": 0.75,
+            "ndcgAtK": 0.76,
+        }
+
+        # 生成最小共享报告，模拟底层 runner 已完成两种真实模式
+        def report(mode: str) -> dict:
+            is_hybrid = mode == "hybrid"
+            return {
+                "status": "success",
+                "failure": None,
+                "mode": mode,
+                "datasetVersion": "test.1",
+                "corpusFingerprints": fingerprints,
+                "retrievalConfig": {
+                    "topK": 4,
+                    "vectorEnabled": is_hybrid,
+                    "vectorRequired": is_hybrid,
+                },
+                "metrics": hybrid_metrics if is_hybrid else bm25_metrics,
+                "cases": [
+                    {
+                        "id": "case-new-hit",
+                        "metrics": {
+                            "hitRateAtK": 1.0 if is_hybrid else 0.0,
+                            "recallAtK": 1.0 if is_hybrid else 0.0,
+                        },
+                    },
+                    {
+                        "id": "case-stable",
+                        "metrics": {"hitRateAtK": 1.0, "recallAtK": 1.0},
+                    },
+                ],
+            }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            context = HarnessContext(
+                root=root,
+                target_dir=root / "target" / "harness",
+                settings=Settings(rag_eval_dataset="gold.json"),
+                database=None,
+            )
+            with patch(
+                "app.rag_eval.runner.run_evaluation",
+                side_effect=lambda **kwargs: report(kwargs["mode"]),
+            ) as run:
+                details = run_rag_hybrid_harness(context)
+
+        self.assertEqual([call.kwargs["mode"] for call in run.call_args_list], ["bm25", "hybrid"])
+        self.assertTrue(run.call_args_list[1].kwargs["allow_external"])
+        self.assertEqual(details["metricDelta"]["recallAtK"], 0.15)
+        self.assertEqual(details["caseDelta"]["newlyHitCaseIds"], ["case-new-hit"])
+        self.assertEqual(details["caseDelta"]["recallImprovedCaseIds"], ["case-new-hit"])
+        self.assertEqual(details["caseDelta"]["recallRegressedCaseIds"], [])
 
 
 class SearchResultEvidenceIdentityTests(unittest.TestCase):

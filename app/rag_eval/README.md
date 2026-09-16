@@ -55,11 +55,22 @@ mindbridge-rag-eval --mode hybrid --allow-external
 - 必须显式提供 `--allow-external`，因为会调用外部 embedding 服务并可能产生费用。
 - 强制 `vectorEnabled=true`、`vectorRequired=true`，缺少凭据或向量能力时直接失败。
 - 禁止失败后改跑 BM25。
+- Chroma 索引和快照写入报告目录下的 `chroma/` 与 `chroma-snapshots/`，不会读取或覆盖生产 `data/chroma`。
 - 默认报告写到 `target/rag/hybrid/rag-eval-report.json`。
 
 以上短命令来自 `pyproject.toml` 的 `[project.scripts]`。项目首次拉取或入口发生变化后，需要在虚拟环境中执行一次 `python -m pip install -e .`；底层的 `python -m app.rag_eval.runner ...` 形式仍然可用。
 
-Engineering Harness 同样已有短命令：完整运行使用 `mindbridge-harness`，只运行 RAG suite 使用 `mindbridge-harness --suite rag`。
+Engineering Harness 同样已有短命令：
+
+```powershell
+# 确定性 BM25 回归门禁
+mindbridge-harness --suite rag
+
+# 同批运行 BM25 与真实 Hybrid，并输出指标差值和逐题变化
+mindbridge-harness --suite rag-hybrid
+```
+
+`rag-hybrid` 是显式外部评测套件，不包含在默认 `mindbridge-harness` 或 `--suite all` 中，避免普通回归受网络和外部服务波动影响。它分别写出 `target/harness/rag-hybrid/bm25-report.json` 与 `hybrid-report.json`，再把五项指标差值及新增命中、丢失命中、Recall 提升和 Recall 退化的 case id 汇总进 Harness 报告。
 
 ## 报告中的对错与诊断
 
@@ -75,8 +86,10 @@ Engineering Harness 同样已有短命令：完整运行使用 `mindbridge-harne
 - 新 CLI runner 已接入正式 Gold、语料双指纹、共享 evaluator 和标准指标。
 - BM25 成功报告与 Hybrid 未授权失败报告使用相同 schema，但写入不同目录。
 - Engineering Harness 的 RAG suite 已直接调用同一个 `run_evaluation()`，使用正式 68 条 Gold 和同一份报告契约，不再读取旧 60 条数据或自行计算指标。
+- Engineering Harness 额外提供显式 `rag-hybrid` suite；它复用同一个 runner 先跑 BM25、再跑强制向量的 Hybrid，不维护第二套判卷逻辑。
 - `runner.py` 中旧的 `evaluate_case()`、`is_relevant()`、`ndcg()` 已删除，旧 0.95 门槛也已停用。
 - Harness 除了检查评测成功且确实运行 BM25，还会校验五项指标没有跌破本轮复核后的回归下限。
+- 首次 Hybrid 只建立观察基线，不设置质量门槛，也不在同一轮根据结果反向调整融合权重。
 
 2026-09-10 正式 BM25 运行使用 68 个 case、TopK=4，结果为：`HitRate@K=0.75`、`Recall@K=0.698529`、`Precision@K=0.202206`、`MRR@K=0.615196`、`NDCG@K=0.616197`。该结果已由独立入口和 Harness 重复复现；失败案例分类和门槛理由见 `mindbridge-rag-bm25-baseline-review.md`。
 
@@ -85,3 +98,17 @@ Engineering Harness 同样已有短命令：完整运行使用 `mindbridge-harne
 同日执行不带 `--allow-external` 的 Hybrid 命令，得到预期失败报告：`status=failed`、`metrics=null`、`failure.code=external_call_not_authorized`，没有发起外部 embedding 请求。
 
 Harness 接入后再次运行独立 BM25 命令和 `--suite rag`：两份报告的 68 条逐题结果、汇总指标、语料指纹与检索配置完全一致，Harness 结果为 PASS。
+
+2026-09-16 首次真实 Hybrid 对照评测使用相同 68 个 case、相同 34 个证据分块和 TopK=4，连续两次运行结果一致：
+
+| 指标 | BM25 | Hybrid | 变化 |
+| --- | ---: | ---: | ---: |
+| HitRate@K | 0.750000 | 0.823529 | +0.073529 |
+| Recall@K | 0.698529 | 0.786765 | +0.088235 |
+| Precision@K | 0.202206 | 0.238971 | +0.036765 |
+| MRR@K | 0.615196 | 0.689951 | +0.074755 |
+| NDCG@K | 0.616197 | 0.699325 | +0.083128 |
+
+Hybrid 新命中 7 个 case，同时丢失 2 个原 BM25 命中 case；因此当前结论是“总体明显提升，但保留 BM25 对照和逐题回退诊断”，暂不删除 BM25 基线，也暂不把首次结果直接固化为 Hybrid 门槛。
+
+真实运行还验证了两项环境约束：Python 3.12/Windows 使用带预编译 wheel 的 `chromadb==1.5.9`；Embedding 请求按每批最多 20 条拆分，以满足当前 `qwen3.7-text-embedding` 接口限制。代理环境通过 `httpx[socks]` 提供 SOCKS 支持。

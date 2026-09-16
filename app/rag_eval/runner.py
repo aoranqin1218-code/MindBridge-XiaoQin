@@ -62,7 +62,7 @@ def run_evaluation(
     started_at = _utc_now()
     dataset: GoldDataset | None = None
     fingerprints: CorpusFingerprints | None = None
-    report_settings = _settings_for_report(mode, settings)
+    report_settings = _settings_for_report(mode, settings, output_path)
 
     try:
         try:
@@ -77,7 +77,7 @@ def run_evaluation(
         )
         fingerprints = compute_corpus_fingerprints(corpus_evidence)
         validate_gold_corpus(dataset, fingerprints)
-        effective_settings = _settings_for_mode(mode, settings, allow_external)
+        effective_settings = _settings_for_mode(mode, settings, allow_external, output_path)
         report_settings = effective_settings
         evaluation = _evaluate_corpus(
             mode,
@@ -157,8 +157,13 @@ def run_evaluation(
     return report
 
 
-# 根据 BM25 或 Hybrid 模式生成明确的向量开关配置，Hybrid 额外要求外部调用授权和凭据
-def _settings_for_mode(mode: str, settings: Settings, allow_external: bool) -> Settings:
+# 根据 BM25 或 Hybrid 模式生成明确的运行配置，Hybrid 额外校验外部调用授权和凭据
+def _settings_for_mode(
+    mode: str,
+    settings: Settings,
+    allow_external: bool,
+    output_path: str | Path,
+) -> Settings:
     if mode not in {"bm25", "hybrid"}:
         raise EvaluationRunError("preflight", "unsupported_mode", f"不支持的评测模式：{mode}")
     if mode == "hybrid":
@@ -174,11 +179,11 @@ def _settings_for_mode(mode: str, settings: Settings, allow_external: bool) -> S
                 "embedding_credentials_missing",
                 "Hybrid 评测缺少 OPENAI_API_KEY",
             )
-    return _settings_for_report(mode, settings)
+    return _settings_for_report(mode, settings, output_path)
 
 
-# 为失败报告提前映射模式开关，不触发凭据检查或任何外部调用
-def _settings_for_report(mode: str, settings: Settings) -> Settings:
+# 为报告提前映射模式开关和隔离路径，不触发凭据检查或任何外部调用
+def _settings_for_report(mode: str, settings: Settings, output_path: str | Path) -> Settings:
     if mode == "bm25":
         return settings.model_copy(
             update={
@@ -188,11 +193,14 @@ def _settings_for_report(mode: str, settings: Settings) -> Settings:
             }
         )
     if mode == "hybrid":
+        report_dir = Path(output_path).resolve().parent
         return settings.model_copy(
             update={
                 "database_url": "sqlite:///:memory:",
                 "knowledge_vector_enabled": True,
                 "knowledge_vector_required": True,
+                "chroma_persist_dir": str(report_dir / "chroma"),
+                "chroma_snapshot_dir": str(report_dir / "chroma-snapshots"),
             }
         )
     return settings
@@ -313,6 +321,9 @@ def _retrieval_config(settings: Settings, top_k: int) -> dict[str, object]:
         "hybridVectorWeight": settings.knowledge_hybrid_vector_weight,
         "hybridBm25Weight": settings.knowledge_hybrid_bm25_weight,
         "embeddingModel": settings.openai_embedding_model,
+        "chromaPersistDir": settings.chroma_persist_dir,
+        "chromaCollectionName": settings.chroma_collection_name,
+        "chromaSnapshotDir": settings.chroma_snapshot_dir,
     }
 
 

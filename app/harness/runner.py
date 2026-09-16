@@ -109,7 +109,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--suite",                                                 # 登记：接受一个 --suite 参数，可重复，取值限定在 choices 里
         action="append",
-        choices=["risk", "routing", "skills", "rag", "api", "tool-queue", "all"],
+        choices=["risk", "routing", "skills", "rag", "rag-hybrid", "api", "tool-queue", "all"],
         default=None,
         help="Harness suite to run. Can be supplied multiple times.",
     )
@@ -237,7 +237,7 @@ def reset_database(context: HarnessContext) -> None:
 # 把命令行请求（--suite risk 或 --suite all）解析成"要执行哪些 suite"的 (名字, 函数) 列表。
 # 不传或传 all → 六类全跑；否则按别名（risk/routing/skills/rag/api/tool-queue）挑出对应的几个
 def resolve_suites(requested: list[str] | None) -> list[tuple[str, Callable[[HarnessContext], dict]]]:
-    all_suites: list[tuple[str, Callable[[HarnessContext], dict]]] = [
+    default_suites: list[tuple[str, Callable[[HarnessContext], dict]]] = [
         ("Risk Safety Harness", run_risk_safety_harness),
         ("Agent Routing Harness", run_agent_routing_harness),
         ("Standard Skills Harness", run_standard_skills_harness),
@@ -245,8 +245,11 @@ def resolve_suites(requested: list[str] | None) -> list[tuple[str, Callable[[Har
         ("API Harness", run_api_harness),
         ("Tool Queue Harness", run_tool_queue_harness),
     ]
+    external_suites: list[tuple[str, Callable[[HarnessContext], dict]]] = [
+        ("RAG Hybrid Harness", run_rag_hybrid_harness),
+    ]
     if not requested or "all" in requested:
-        return all_suites
+        return default_suites
 
     selected = set(requested)
     aliases = {
@@ -254,11 +257,12 @@ def resolve_suites(requested: list[str] | None) -> list[tuple[str, Callable[[Har
         "routing": "Agent Routing Harness",
         "skills": "Standard Skills Harness",
         "rag": "RAG Harness",
+        "rag-hybrid": "RAG Hybrid Harness",
         "api": "API Harness",
         "tool-queue": "Tool Queue Harness",
     }
     names = {aliases[item] for item in selected}
-    return [suite for suite in all_suites if suite[0] in names]
+    return [suite for suite in [*default_suites, *external_suites] if suite[0] in names]
 
 
 # 安全执行单个 suite：跑 fn(context)，把结果装进 CheckResult。
@@ -538,6 +542,128 @@ def run_rag_harness(context: HarnessContext) -> dict:
         "metrics": metrics,
         "qualityThresholds": RAG_BM25_QUALITY_THRESHOLDS,
         "report": str(output_path),
+    }
+
+
+# 在同一语料和 Gold 上连续运行 BM25 与真实 Hybrid，并汇总指标及逐题变化
+def run_rag_hybrid_harness(context: HarnessContext) -> dict:
+    from app.rag_eval.runner import run_evaluation
+
+    dataset_path = context.root / context.settings.rag_eval_dataset
+    output_dir = context.target_dir / "rag-hybrid"
+    bm25_output = output_dir / "bm25-report.json"
+    hybrid_output = output_dir / "hybrid-report.json"
+    common = {
+        "dataset_path": dataset_path,
+        "settings": context.settings,
+        "knowledge_dir": context.root / "app" / "knowledge",
+        "top_k": context.settings.knowledge_top_k,
+    }
+    bm25_report = run_evaluation(
+        mode="bm25",
+        output_path=bm25_output,
+        **common,
+    )
+    hybrid_report = run_evaluation(
+        mode="hybrid",
+        output_path=hybrid_output,
+        allow_external=True,
+        **common,
+    )
+
+    _expect_rag_report_success(bm25_report, "BM25")
+    _expect_rag_report_success(hybrid_report, "Hybrid")
+    expect(bm25_report["mode"] == "bm25", f"BM25 报告模式错误：{bm25_report['mode']}")
+    expect(hybrid_report["mode"] == "hybrid", f"Hybrid 报告模式错误：{hybrid_report['mode']}")
+    expect(
+        hybrid_report["retrievalConfig"]["vectorEnabled"] is True,
+        "Hybrid 报告没有启用向量检索",
+    )
+    expect(
+        hybrid_report["retrievalConfig"]["vectorRequired"] is True,
+        "Hybrid 报告允许静默降级为 BM25",
+    )
+    expect(
+        bm25_report["datasetVersion"] == hybrid_report["datasetVersion"],
+        "BM25 与 Hybrid 使用了不同的数据集版本",
+    )
+    expect(
+        bm25_report["corpusFingerprints"] == hybrid_report["corpusFingerprints"],
+        "BM25 与 Hybrid 使用了不同的语料快照",
+    )
+    expect(
+        bm25_report["retrievalConfig"]["topK"] == hybrid_report["retrievalConfig"]["topK"],
+        "BM25 与 Hybrid 使用了不同的 TopK",
+    )
+
+    bm25_metrics = bm25_report["metrics"]
+    hybrid_metrics = hybrid_report["metrics"]
+    for metric_name, minimum in RAG_BM25_QUALITY_THRESHOLDS.items():
+        actual = bm25_metrics[metric_name]
+        expect(
+            actual >= minimum,
+            f"RAG BM25 {metric_name} 低于回归下限：实际 {actual:.6f}，要求至少 {minimum:.2f}",
+        )
+    metric_delta = {
+        metric_name: round(hybrid_metrics[metric_name] - bm25_metrics[metric_name], 6)
+        for metric_name in RAG_BM25_QUALITY_THRESHOLDS
+    }
+    case_delta = _compare_rag_cases(bm25_report["cases"], hybrid_report["cases"])
+
+    return {
+        "mode": "bm25-vs-hybrid",
+        "datasetVersion": bm25_report["datasetVersion"],
+        "corpusFingerprints": bm25_report["corpusFingerprints"],
+        "bm25": {
+            "metrics": bm25_metrics,
+            "qualityThresholds": RAG_BM25_QUALITY_THRESHOLDS,
+            "report": str(bm25_output),
+        },
+        "hybrid": {
+            "retrievalConfig": hybrid_report["retrievalConfig"],
+            "metrics": hybrid_metrics,
+            "report": str(hybrid_output),
+        },
+        "metricDelta": metric_delta,
+        "caseDelta": case_delta,
+    }
+
+
+# 把共享 runner 的稳定失败结构转换成 Harness 失败信息
+def _expect_rag_report_success(report: dict, label: str) -> None:
+    if report["status"] == "success":
+        return
+    failure = report["failure"]
+    raise HarnessFailure(f"RAG {label} 评测失败 [{failure['code']}]：{failure['message']}")
+
+
+# 比较同一批题的命中与 Recall 变化，返回便于人工复核的 case id 列表
+def _compare_rag_cases(bm25_cases: list[dict], hybrid_cases: list[dict]) -> dict:
+    bm25_by_id = {item["id"]: item for item in bm25_cases}
+    hybrid_by_id = {item["id"]: item for item in hybrid_cases}
+    expect(set(bm25_by_id) == set(hybrid_by_id), "BM25 与 Hybrid 的 case 集合不一致")
+
+    newly_hit = []
+    lost_hit = []
+    recall_improved = []
+    recall_regressed = []
+    for case_id in bm25_by_id:
+        bm25_metrics = bm25_by_id[case_id]["metrics"]
+        hybrid_metrics = hybrid_by_id[case_id]["metrics"]
+        if bm25_metrics["hitRateAtK"] == 0.0 and hybrid_metrics["hitRateAtK"] == 1.0:
+            newly_hit.append(case_id)
+        if bm25_metrics["hitRateAtK"] == 1.0 and hybrid_metrics["hitRateAtK"] == 0.0:
+            lost_hit.append(case_id)
+        if hybrid_metrics["recallAtK"] > bm25_metrics["recallAtK"]:
+            recall_improved.append(case_id)
+        if hybrid_metrics["recallAtK"] < bm25_metrics["recallAtK"]:
+            recall_regressed.append(case_id)
+
+    return {
+        "newlyHitCaseIds": newly_hit,
+        "lostHitCaseIds": lost_hit,
+        "recallImprovedCaseIds": recall_improved,
+        "recallRegressedCaseIds": recall_regressed,
     }
 
 
