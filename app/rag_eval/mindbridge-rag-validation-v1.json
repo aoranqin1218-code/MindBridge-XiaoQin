@@ -1,0 +1,123 @@
+{
+  "schemaVersion": 1,
+  "datasetVersion": "2026-09-16.validation.1",
+  "corpus": {
+    "structureFingerprint": "sha256:b418a8779e4add1d17ca860fcf2f60f4a736da0249c729601df503580f140ede",
+    "contentFingerprint": "sha256:238e4a9a59b0b18d9ec9c125a198031e79654dbe2786ad964bdcb0db38a5904b"
+  },
+  "labeling": {
+    "method": "manual-engineering-review",
+    "reviewer": "Codex（独立验证集两遍工程复核）",
+    "notes": "在完成正式 68 题的 TopK 初步诊断后新增；12 个问题不复用正式集的 id 或 query，覆盖当前全部 11 个知识来源。属于非领域专家工程复核，不是临床专家标注。"
+  },
+  "cases": [
+    {
+      "id": "validation-academic-advisor-communication",
+      "query": "研究生课题卡住又害怕和导师沟通时，可以提前整理哪些沟通要点？",
+      "relevantEvidence": [
+        {"source": "academic-stress-and-burnout.md", "sourceIndex": 1}
+      ],
+      "expectedSources": ["academic-stress-and-burnout.md"],
+      "diagnosticTerms": ["当前进展", "卡点", "已经尝试的方法", "具体帮助"]
+    },
+    {
+      "id": "validation-adjustment-major-decision",
+      "query": "面对转专业选择时，收集学院政策和可替代路径有什么作用，助手能替学生做决定吗？",
+      "relevantEvidence": [
+        {"source": "adjustment-and-transition.md", "sourceIndex": 1}
+      ],
+      "expectedSources": ["adjustment-and-transition.md"],
+      "diagnosticTerms": ["学院政策", "可替代选择", "降低灾难化", "不要替学生做重大决定"]
+    },
+    {
+      "id": "validation-anxiety-fact-guess-action",
+      "query": "身体稍微平静后，怎样把焦虑想法区分成事实、猜测和能马上做的事？",
+      "relevantEvidence": [
+        {"source": "anxiety-panic-grounding.md", "sourceIndex": 1}
+      ],
+      "expectedSources": ["anxiety-panic-grounding.md"],
+      "diagnosticTerms": ["事实", "猜测", "下一步", "10 到 30 分钟"]
+    },
+    {
+      "id": "validation-campus-sleep-escalation",
+      "query": "睡眠问题持续很多周并影响白天功能时，校园心理助手应建议联系哪里？",
+      "relevantEvidence": [
+        {"source": "campus-mental-health.md", "sourceIndex": 4}
+      ],
+      "expectedSources": ["campus-mental-health.md"],
+      "diagnosticTerms": ["连续多周", "白天功能受损", "校医院", "心理中心"]
+    },
+    {
+      "id": "validation-referral-three-part-summary",
+      "query": "担心去咨询室后说不清楚，可以把求助内容提前整理成哪三个部分？",
+      "relevantEvidence": [
+        {"source": "counselor-referral-and-resources.md", "sourceIndex": 1}
+      ],
+      "expectedSources": ["counselor-referral-and-resources.md"],
+      "diagnosticTerms": ["我最近的状态", "最影响我的事情", "希望得到的帮助"]
+    },
+    {
+      "id": "validation-exam-post-review-limit",
+      "query": "考完一门后忍不住反复对答案和自责，知识库建议怎样限制复盘？",
+      "relevantEvidence": [
+        {"source": "exam-season-guidance.md", "sourceIndex": 1}
+      ],
+      "expectedSources": ["exam-season-guidance.md"],
+      "diagnosticTerms": ["15 分钟", "客观问题", "停止反复查答案", "下一门考试"]
+    },
+    {
+      "id": "validation-low-mood-behavioral-activation",
+      "query": "状态很低、什么都不想做时，行为激活可以从哪些特别小的动作开始？",
+      "relevantEvidence": [
+        {"source": "low-mood-depression-support.md", "sourceIndex": 0}
+      ],
+      "expectedSources": ["low-mood-depression-support.md"],
+      "diagnosticTerms": ["behavioral activation", "喝水", "洗脸", "走 5 分钟"]
+    },
+    {
+      "id": "validation-privacy-no-absolute-secrecy",
+      "query": "为什么校园心理助手不能承诺无论发生什么都绝对保密？",
+      "relevantEvidence": [
+        {"source": "privacy-boundaries-and-ethics.md", "sourceIndex": 0}
+      ],
+      "expectedSources": ["privacy-boundaries-and-ethics.md"],
+      "diagnosticTerms": ["绝对保密", "immediate danger", "通知辅导员", "保护安全"]
+    },
+    {
+      "id": "validation-relationship-breakup-impulse",
+      "query": "分手后很想连续发消息或冲动去找对方，可以先做哪些降冲动处理？",
+      "relevantEvidence": [
+        {"source": "relationships-and-family.md", "sourceIndex": 1}
+      ],
+      "expectedSources": ["relationships-and-family.md"],
+      "diagnosticTerms": ["延迟 20 分钟", "先不发送", "找朋友陪伴", "离开"]
+    },
+    {
+      "id": "validation-risk-high-available-means",
+      "query": "学生已经准备了伤害自己的工具并表示今晚行动，为什么必须按高风险处理？",
+      "relevantEvidence": [
+        {"source": "risk-policy.md", "sourceIndex": 3}
+      ],
+      "expectedSources": ["risk-policy.md"],
+      "diagnosticTerms": ["准备了工具", "今晚就去做", "HIGH", "immediate danger"]
+    },
+    {
+      "id": "validation-sleep-leave-bed",
+      "query": "躺了半小时仍然清醒时，是继续硬睡还是暂时离床做低刺激活动？",
+      "relevantEvidence": [
+        {"source": "sleep-routine-self-care.md", "sourceIndex": 1}
+      ],
+      "expectedSources": ["sleep-routine-self-care.md"],
+      "diagnosticTerms": ["20 到 30 分钟", "短暂离开床", "低刺激活动", "困意回来"]
+    },
+    {
+      "id": "validation-campus-medication-boundary",
+      "query": "学生想让助手判断是否需要换药时，校园心理助手应守住什么边界？",
+      "relevantEvidence": [
+        {"source": "campus-mental-health.md", "sourceIndex": 2}
+      ],
+      "expectedSources": ["campus-mental-health.md"],
+      "diagnosticTerms": ["change medication", "qualified professional", "must not", "不能给出医学结论"]
+    }
+  ]
+}

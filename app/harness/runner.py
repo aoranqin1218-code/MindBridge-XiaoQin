@@ -18,7 +18,8 @@ class HarnessFailure(AssertionError):
     pass
 
 
-# 当前确定性 BM25 基线的回归下限；只用于发现退步，不代表线上效果目标
+# 历史 BM25 基线固定使用 TopK=4；下列门槛不可套用到其他 TopK
+RAG_BM25_BASELINE_TOP_K = 4
 RAG_BM25_QUALITY_THRESHOLDS = {
     "hitRateAtK": 0.74,
     "recallAtK": 0.69,
@@ -515,7 +516,7 @@ def run_rag_harness(context: HarnessContext) -> dict:
         output_path=output_path,
         settings=context.settings,
         knowledge_dir=context.root / "app" / "knowledge",
-        top_k=context.settings.knowledge_top_k,
+        top_k=RAG_BM25_BASELINE_TOP_K,
     )
 
     if report["status"] != "success":
@@ -598,12 +599,6 @@ def run_rag_hybrid_harness(context: HarnessContext) -> dict:
 
     bm25_metrics = bm25_report["metrics"]
     hybrid_metrics = hybrid_report["metrics"]
-    for metric_name, minimum in RAG_BM25_QUALITY_THRESHOLDS.items():
-        actual = bm25_metrics[metric_name]
-        expect(
-            actual >= minimum,
-            f"RAG BM25 {metric_name} 低于回归下限：实际 {actual:.6f}，要求至少 {minimum:.2f}",
-        )
     metric_delta = {
         metric_name: round(hybrid_metrics[metric_name] - bm25_metrics[metric_name], 6)
         for metric_name in RAG_BM25_QUALITY_THRESHOLDS
@@ -615,8 +610,8 @@ def run_rag_hybrid_harness(context: HarnessContext) -> dict:
         "datasetVersion": bm25_report["datasetVersion"],
         "corpusFingerprints": bm25_report["corpusFingerprints"],
         "bm25": {
+            "retrievalConfig": bm25_report["retrievalConfig"],
             "metrics": bm25_metrics,
-            "qualityThresholds": RAG_BM25_QUALITY_THRESHOLDS,
             "report": str(bm25_output),
         },
         "hybrid": {

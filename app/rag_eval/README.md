@@ -26,6 +26,7 @@
 | `app/rag_eval/inventory.py` | 把知识材料编成带编号的目录 | 复用生产 `chunk_text()` 生成 `CorpusEvidence`、双指纹和人工清单 | 不参与正式判卷 |
 | `app/rag_eval/mindbridge-rag-evidence-inventory.md` | 人工标答案时看的分块目录 | 展示当前 34 个证据分块及其 EvidenceKey | 不是 Gold，不参与算分 |
 | `app/rag_eval/mindbridge-rag-gold-v1.json` | 正确答案集 | 保存版本、语料指纹、68 个问题和人工确认的 `relevantEvidence` | 不执行检索、不实现公式 |
+| `app/rag_eval/mindbridge-rag-validation-v1.json` | 独立验证题 | 保存未参与首轮参数分析的 12 个问题，覆盖当前全部 11 个知识来源 | 不替代正式 68 题历史集 |
 | `app/rag_eval/mindbridge-rag-bm25-baseline-review.md` | 基线审计记录 | 保存失败案例分类、Gold 边界和 BM25 回归门槛的推导理由 | 不参与运行、不修改分数 |
 | `app/rag_eval/dataset.py` | 答案集的读取和验真人员 | 严格解析 Gold schema，并检查 Gold 与当前知识库双指纹是否一致 | 不调用检索器、不算分 |
 | `app/rag_eval/metrics.py` | 数学公式表 | 统一排名去重和 HitRate、Recall、Precision、MRR、NDCG 公式 | 不读文件、不连接数据库 |
@@ -63,10 +64,10 @@ mindbridge-rag-eval --mode hybrid --allow-external
 Engineering Harness 同样已有短命令：
 
 ```powershell
-# 确定性 BM25 回归门禁
+# 固定 TopK=4 的确定性 BM25 回归门禁
 mindbridge-harness --suite rag
 
-# 同批运行 BM25 与真实 Hybrid，并输出指标差值和逐题变化
+# 按生产 TopK 同批运行 BM25 与真实 Hybrid，并输出指标差值和逐题变化
 mindbridge-harness --suite rag-hybrid
 ```
 
@@ -88,7 +89,8 @@ mindbridge-harness --suite rag-hybrid
 - Engineering Harness 的 RAG suite 已直接调用同一个 `run_evaluation()`，使用正式 68 条 Gold 和同一份报告契约，不再读取旧 60 条数据或自行计算指标。
 - Engineering Harness 额外提供显式 `rag-hybrid` suite；它复用同一个 runner 先跑 BM25、再跑强制向量的 Hybrid，不维护第二套判卷逻辑。
 - `runner.py` 中旧的 `evaluate_case()`、`is_relevant()`、`ndcg()` 已删除，旧 0.95 门槛也已停用。
-- Harness 除了检查评测成功且确实运行 BM25，还会校验五项指标没有跌破本轮复核后的回归下限。
+- BM25-only Harness 固定使用历史 TopK=4，并校验五项指标没有跌破本轮复核后的回归下限。
+- Hybrid Harness 使用生产 TopK 做同口径对照，不套用只对 TopK=4 有效的旧 BM25 绝对门槛。
 - 首次 Hybrid 只建立观察基线，不设置质量门槛，也不在同一轮根据结果反向调整融合权重。
 
 2026-09-10 正式 BM25 运行使用 68 个 case、TopK=4，结果为：`HitRate@K=0.75`、`Recall@K=0.698529`、`Precision@K=0.202206`、`MRR@K=0.615196`、`NDCG@K=0.616197`。该结果已由独立入口和 Harness 重复复现；失败案例分类和门槛理由见 `mindbridge-rag-bm25-baseline-review.md`。
@@ -110,5 +112,17 @@ Harness 接入后再次运行独立 BM25 命令和 `--suite rag`：两份报告�
 | NDCG@K | 0.616197 | 0.699325 | +0.083128 |
 
 Hybrid 新命中 7 个 case，同时丢失 2 个原 BM25 命中 case；因此当前结论是“总体明显提升，但保留 BM25 对照和逐题回退诊断”，暂不删除 BM25 基线，也暂不把首次结果直接固化为 Hybrid 门槛。
+
+随后使用原 68 题作为开发/历史集，并新增独立的 12 题验证集，对 TopK=4、5、6 做单变量比较；候选数 16、融合权重 0.65/0.35、重排、分块和 Embedding 模型均保持不变。为排除外部 Embedding 在不同请求之间的轻微排名波动，定稿矩阵从同一次 TopK=6 检索结果分别截取前 4、5、6 条，再调用同一指标函数计算。原 68 题上的 Hybrid 结果为：
+
+| TopK | HitRate@K | Recall@K | Precision@K | MRR@K | NDCG@K |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 4 | 0.823529 | 0.786765 | 0.238971 | 0.689951 | 0.699325 |
+| 5 | 0.852941 | 0.816176 | 0.200000 | 0.695833 | 0.711990 |
+| 6 | 0.897059 | 0.882353 | 0.181373 | 0.703186 | 0.737341 |
+
+独立 12 题上，Hybrid 在 TopK=4、5、6 的 HitRate 和 Recall 都是 1.0；TopK=4 已经饱和。综合历史集上 TopK=5 新增 2 个命中且没有丢失原命中、独立集不退化，以及每次只增加 1 个上下文分块的成本，本轮把生产默认值从 4 调为 5。TopK=6 保留为后续候选，不在同一轮继续扩大上下文。
+
+修改后真实执行 `mindbridge-harness --suite rag-hybrid` 已通过，确认 BM25 和 Hybrid 都使用生产 TopK=5，且报告不再附带 TopK=4 专属绝对门槛。由于 Hybrid 依赖外部 Embedding，同一模型名在不同调用时仍可能出现小幅排名波动，因此本轮不把单次 Hybrid 分数固化为绝对门槛；确定性 BM25 TopK=4 继续承担稳定回归门禁。
 
 真实运行还验证了两项环境约束：Python 3.12/Windows 使用带预编译 wheel 的 `chromadb==1.5.9`；Embedding 请求按每批最多 20 条拆分，以满足当前 `qwen3.7-text-embedding` 接口限制。代理环境通过 `httpx[socks]` 提供 SOCKS 支持。

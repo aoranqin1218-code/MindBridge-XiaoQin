@@ -14,6 +14,7 @@ from app.core.config import Settings
 from app.harness.runner import (
     HarnessContext,
     HarnessFailure,
+    RAG_BM25_BASELINE_TOP_K,
     RAG_BM25_QUALITY_THRESHOLDS,
     resolve_suites,
     run_rag_harness,
@@ -427,6 +428,49 @@ class GoldDatasetLoaderTests(unittest.TestCase):
         }
         self.assertEqual(labeled_sources, current_sources)
 
+    # 验证调优验证集与正式集相互独立，并覆盖当前全部知识来源和有效证据键
+    def test_tuning_validation_gold_is_independent_and_covers_all_sources(self):
+        project_root = Path(__file__).resolve().parents[1]
+        settings = Settings()
+        current_evidence = load_bundled_corpus_evidence(
+            project_root / "app" / "knowledge",
+            settings.knowledge_chunk_size,
+            settings.knowledge_chunk_overlap,
+        )
+        fingerprints = compute_corpus_fingerprints(current_evidence)
+        available_keys = {item.evidence_key for item in current_evidence}
+        current_sources = {item.source for item in current_evidence}
+        official = load_gold_dataset(
+            project_root / "app" / "rag_eval" / "mindbridge-rag-gold-v1.json"
+        )
+        validation = load_gold_dataset(
+            project_root / "app" / "rag_eval" / "mindbridge-rag-validation-v1.json"
+        )
+
+        validate_gold_corpus(validation, fingerprints)
+        self.assertEqual(validation.dataset_version, "2026-09-16.validation.1")
+        self.assertEqual(validation.labeling.method, "manual-engineering-review")
+        self.assertEqual(len(validation.cases), 12)
+        self.assertTrue(
+            {case.id for case in official.cases}.isdisjoint(
+                case.id for case in validation.cases
+            )
+        )
+        self.assertTrue(
+            {case.query for case in official.cases}.isdisjoint(
+                case.query for case in validation.cases
+            )
+        )
+        for case in validation.cases:
+            with self.subTest(case_id=case.id):
+                self.assertTrue(set(case.relevant_evidence_keys) <= available_keys)
+        labeled_sources = {
+            evidence.source
+            for case in validation.cases
+            for evidence in case.relevant_evidence
+        }
+        self.assertEqual(labeled_sources, current_sources)
+
 
 class EvidenceInventoryTests(unittest.TestCase):
     # 验证清单生成器复用线上分块规则，并按文件名和段内序号稳定排序
@@ -684,6 +728,10 @@ class SharedEvaluatorTests(unittest.TestCase):
 
 
 class EvaluationRunnerTests(unittest.TestCase):
+    # 验证生产检索默认返回 5 个结果
+    def test_default_production_top_k_is_five(self):
+        self.assertEqual(Settings(_env_file=None).knowledge_top_k, 5)
+
     # 生成与临时知识目录严格绑定的最小 Gold Set，供 runner 集成测试使用
     def write_gold_dataset(
         self,
@@ -847,6 +895,7 @@ class EvaluationRunnerTests(unittest.TestCase):
             settings = Settings(
                 rag_eval_dataset="gold.json",
                 knowledge_vector_enabled=True,
+                knowledge_top_k=5,
             )
             self.write_gold_dataset(root, settings, root / "app" / "knowledge")
             context = HarnessContext(
@@ -866,6 +915,7 @@ class EvaluationRunnerTests(unittest.TestCase):
         self.assertEqual(details["metrics"], report["metrics"])
         self.assertEqual(details["qualityThresholds"], RAG_BM25_QUALITY_THRESHOLDS)
         self.assertFalse(details["retrievalConfig"]["vectorEnabled"])
+        self.assertEqual(details["retrievalConfig"]["topK"], RAG_BM25_BASELINE_TOP_K)
         self.assertEqual(details["metrics"]["caseCount"], 1)
 
     # 验证共享评测指标低于新 BM25 回归下限时，RAG Harness 会明确失败
@@ -930,7 +980,7 @@ class EvaluationRunnerTests(unittest.TestCase):
         }
 
         # 生成最小共享报告，模拟底层 runner 已完成两种真实模式
-        def report(mode: str) -> dict:
+        def report(mode: str, top_k: int) -> dict:
             is_hybrid = mode == "hybrid"
             return {
                 "status": "success",
@@ -939,7 +989,7 @@ class EvaluationRunnerTests(unittest.TestCase):
                 "datasetVersion": "test.1",
                 "corpusFingerprints": fingerprints,
                 "retrievalConfig": {
-                    "topK": 4,
+                    "topK": top_k,
                     "vectorEnabled": is_hybrid,
                     "vectorRequired": is_hybrid,
                 },
@@ -964,17 +1014,20 @@ class EvaluationRunnerTests(unittest.TestCase):
             context = HarnessContext(
                 root=root,
                 target_dir=root / "target" / "harness",
-                settings=Settings(rag_eval_dataset="gold.json"),
+                settings=Settings(rag_eval_dataset="gold.json", knowledge_top_k=5),
                 database=None,
             )
             with patch(
                 "app.rag_eval.runner.run_evaluation",
-                side_effect=lambda **kwargs: report(kwargs["mode"]),
+                side_effect=lambda **kwargs: report(kwargs["mode"], kwargs["top_k"]),
             ) as run:
                 details = run_rag_hybrid_harness(context)
 
         self.assertEqual([call.kwargs["mode"] for call in run.call_args_list], ["bm25", "hybrid"])
+        self.assertEqual([call.kwargs["top_k"] for call in run.call_args_list], [5, 5])
         self.assertTrue(run.call_args_list[1].kwargs["allow_external"])
+        self.assertNotIn("qualityThresholds", details["bm25"])
+        self.assertEqual(details["bm25"]["retrievalConfig"]["topK"], 5)
         self.assertEqual(details["metricDelta"]["recallAtK"], 0.15)
         self.assertEqual(details["caseDelta"]["newlyHitCaseIds"], ["case-new-hit"])
         self.assertEqual(details["caseDelta"]["recallImprovedCaseIds"], ["case-new-hit"])

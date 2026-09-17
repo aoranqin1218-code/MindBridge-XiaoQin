@@ -36,7 +36,7 @@ class Settings(BaseSettings):
     openai_embedding_model: str = "text-embedding-3-small"
     database_url: str = "mysql+pymysql://mindbridge:mindbridge@127.0.0.1:3306/mindbridge?charset=utf8mb4"
     chat_history_limit: int = 10
-    knowledge_top_k: int = 4
+    knowledge_top_k: int = 5
     knowledge_candidate_k: int = 16
     knowledge_chunk_size: int = 512
     knowledge_chunk_overlap: int = 64
