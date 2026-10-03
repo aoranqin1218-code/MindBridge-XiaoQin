@@ -1,6 +1,6 @@
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
@@ -147,8 +147,13 @@ def admin_agent_traces(_: Annotated[UserAccount, Depends(require_admin)], db: An
 
 
 @router.get("/api/admin/tool-audits")
-def admin_tool_audits(_: Annotated[UserAccount, Depends(require_admin)], db: Annotated[Session, Depends(get_db)]):
-    return ReportService(db).tool_audits()
+def admin_tool_audits(
+    _: Annotated[UserAccount, Depends(require_admin)], db: Annotated[Session, Depends(get_db)],
+    job_id: Annotated[int | None, Query(ge=1)] = None,
+    report_id: Annotated[int | None, Query(ge=1)] = None,
+    limit: Annotated[int, Query(ge=1, le=1000)] = 100,
+):
+    return ReportService(db).tool_audits(job_id=job_id, report_id=report_id, limit=limit)
 
 
 @router.get("/api/admin/conversations/{session_id}")

@@ -125,8 +125,16 @@ class ReportService:
             )
         return responses
 
-    def tool_audits(self) -> list[ToolAuditResponse]:
-        rows = self.db.query(ToolAuditRecord).order_by(ToolAuditRecord.created_at.desc()).limit(100).all()
+    def tool_audits(self, *, job_id: int | None = None, report_id: int | None = None,
+                    limit: int = 100) -> list[ToolAuditResponse]:
+        if not 1 <= limit <= 1000:
+            raise ValueError("审计查询 limit 必须介于 1 和 1000")
+        query = self.db.query(ToolAuditRecord)
+        if job_id is not None:
+            query = query.filter(ToolAuditRecord.job_id == job_id)
+        if report_id is not None:
+            query = query.filter(ToolAuditRecord.report_id == report_id)
+        rows = query.order_by(ToolAuditRecord.id.desc()).limit(limit).all()
         return [
             ToolAuditResponse(
                 id=row.id,

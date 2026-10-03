@@ -51,7 +51,7 @@ Teach Memory, RAG, Skills, Run Trace, SSE and authentication only to the depth n
 ## Accuracy constraints
 
 - The current project is a controlled event-driven multi-Agent workflow, not a classic ReAct loop.
-- The current project does not yet implement model-native Function Calling.
+- The post-response background Tool Loop implements native Function Calling (MB-022, verified with Qwen on 2026-10-02). The online claim-based multi-Agent runtime remains separate; do not describe it as a native tool-calling ReAct loop.
 - MCP direct invocation and asynchronous queue execution are separate runtime paths that share underlying tool services; do not claim the queue calls tools through MCP.
 - Do not attribute BM25 fallback RAG metrics to the Chroma vector path.
 - Do not invent production incidents, traffic, accuracy, recall, latency or performance improvements.

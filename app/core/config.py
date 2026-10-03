@@ -1,6 +1,8 @@
 from functools import lru_cache
 from pathlib import Path
 
+from pydantic import Field
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -74,6 +76,10 @@ class Settings(BaseSettings):
     alert_email_to: str = ""
     alert_email_subject_prefix: str = "[MindBridge 高风险预警]"
     tool_queue_enabled: bool = True
+    tool_loop_enabled: bool = True
+    tool_loop_max_rounds: int = Field(default=6, ge=1, le=100)
+    tool_loop_timeout_seconds: float = Field(default=60.0, gt=0, le=3600)
+    tool_loop_workers: int = Field(default=2, ge=1, le=32)            # 后台最多同时处理 2 个 Tool Loop 父任务
     tool_queue_poll_interval_seconds: float = 1.0
     tool_queue_batch_size: int = 10
     tool_queue_max_attempts: int = 3

@@ -12,7 +12,8 @@
 - 数据闭环：咨询/风险消息完整写入 MySQL，短期上下文写入 Redis，高风险消息写入 Excel 台账并通过邮件发送预警。
 - 本地微调模型接入：支持通过 Ollama 加载 `mindbridge-qwen2.5-7b-ft-q4_k_m.gguf`。
 - OpenAI-compatible API 接入：也可切换到云端模型。
-- MCP 工具服务：暴露 Excel 报告写入和风险通知工具，后端高风险后处理通过 MCP client 调用这些工具。
+- 原生 Function Calling 后置 Tool Loop：默认只入队一个父任务，后台模型选择留档、建案、预警；代码强制控制风险权限、依赖、轮数、超时、重试和审计。
+- MCP 工具服务：仅在关闭队列时作为兼容直连路径；默认后台 Worker 直接复用内部工具服务，不经 MCP。
 - RAG 评测：Recall@K、Precision@K、MRR、NDCG@K、HitRate。
 
 ## 技术栈
@@ -33,7 +34,7 @@ Excel 台账：openpyxl
 邮件预警：SMTP / smtplib
 前端：原生 HTML / CSS / JavaScript
 认证：Basic Auth
-工具协议：MCP
+工具协议：原生 Function Calling；MCP 兼容直连
 ```
 
 说明：当前 Python 版只保留事件驱动多 Agent runtime，入口在 `app/agents/event_driven_runtime.py`。共享返回类型定义在 `app/agents/result.py`。RAG 默认使用 Chroma 本地持久化向量库做语义召回，同时用 BM25 做关键词召回，再融合并本地 rerank；未安装 Chroma、未配置 `OPENAI_API_KEY` 或向量服务异常时，会自动回退到本地 BM25 + `hybrid_score` reranker，避免演示环境中断。
@@ -84,6 +85,36 @@ TURN_STARTED
 - `SafetyAgent`：独立评估风险，必要时发布 `SAFETY_OVERRIDE`，并审查候选回复。
 - `ContextAgent`：按需聚合 Redis / MySQL 记忆、RAG 检索结果和 Skill 约束。
 - `ResponseAgent`：根据黑板 artifact 生成候选回复 prompt，等待安全审查和采纳。
+
+## 后置 Tool Loop（MB-022）
+
+学生回复生成完毕后，只持久化一个 `TOOL_LOOP` 父任务，SSE `done` 不等待工具链完成。后台按数据库风险派生目标：LOW 留档；MEDIUM 留档 + 建案；HIGH 留档 + 建案 + 预警。模型只能传 `{}`，不能控制报告/个案 ID、风险或收件人。
+
+```env
+TOOL_QUEUE_ENABLED=true
+TOOL_LOOP_ENABLED=true
+TOOL_LOOP_MAX_ROUNDS=6
+TOOL_LOOP_TIMEOUT_SECONDS=60
+TOOL_LOOP_WORKERS=2
+ALERT_EMAIL_DELIVERY_MODE=log
+```
+
+最大轮数包含拒绝、重复请求和最终停止轮次；轮数范围 1–100、超时大于 0 且不超过 3600 秒、Worker 范围 1–32。默认两名 Worker 有独立并发槽，不无限向线程池堆积已领取任务。超时/取消终止后续决策，但已开始的文件/SMTP 写入必须先收尾再进入重试，因此收尾可能超出决策时限。
+
+`TOOL_LOOP_ENABLED=false` 只把新入队任务切回旧确定性计划；已有父任务仍能被消费。`TOOL_QUEUE_ENABLED=false` 切到 MCP 兼容直连，该路径不属于异步 Tool Loop 验收范围。
+
+```powershell
+.\.venv\Scripts\python.exe -m unittest discover -s tests
+.\.venv\Scripts\mindbridge-harness.exe --suite all
+# 显式授权真实模型；隔离 SQLite/Excel，强制日志预警，不连接业务库、不发送邮件
+.\.venv\Scripts\python.exe -m app.harness.tool_loop_live --allow-external --risk HIGH --env-file .env
+```
+
+`--env-file .env` 显式选用项目模型配置，防止继承进程环境中的测试 Key 覆盖它；生产配置仍保持 pydantic-settings 的原优先级。输出保存在每次唯一的 `target/tool-loop-live/<UTC时间>-<ID>/`。不传 `--allow-external` 就拒绝运行；Mock 不能作为真实证据。
+
+2026-10-03 补充真实依赖集成验收：复用 Docker MySQL 8.0.46（宿主 13306）、Redis 7.2.15（16379）和现有 Chroma 34 条索引，真实 Qwen 合成 HIGH 对话命中 5 条知识，SSE done 只入队；后台完成 3 次原生调用，Excel/Case/SMTP Alert 各 1，父任务 10 为 SUCCESS / attempt 1。QQ SMTP 接受 1 封明确标注 TEST 的邮件，用户确认收件，重复与恢复均未重发。证据为 `target/tool-loop-services-live/mb022-test-2522cf4a938a/evidence.json`。此项是本机真实依赖集成，不是公网 HTTP 或生产部署可靠率的证明；原隔离 live CLI 仍强制 log，不会发送邮件。
+
+管理员可查询 `/api/admin/tool-jobs`、`/api/admin/dead-letters` 和 `/api/admin/tool-audits?job_id=1&limit=1000`。审计支持可选 `job_id/report_id` 和有界 `limit`；前端协议不变，本次没有新增 Trace 页面。完整调用链、产物、风险边界与验证记录见 [阶段 6A 知识卡](<F:/Agent开发/MindBridge/Project/mindbridge-py/doc/阶段6A-Function Calling与异步有界Tool Loop.md>)。
 
 ## 安装依赖
 
@@ -204,7 +235,7 @@ ALERT_EMAIL_DELIVERY_MODE=log
 
 ## 邮件预警配置
 
-高风险消息会触发心理报告，并由后端通过 MCP 工具调用完成 Excel 台账写入和邮件预警。发送邮件前需要在 `.env` 中配置 SMTP：
+高风险消息会触发心理报告，默认由后台 Tool Loop 完成 Excel 留档、建案和预警。只有关闭队列时才走 MCP。发送真实邮件前需要把交付模式改为 `smtp` 并配置 SMTP：
 
 ```env
 SMTP_HOST=smtp.example.com
@@ -221,6 +252,8 @@ ALERT_EMAIL_SUBJECT_PREFIX=[MindBridge 高风险预警]
 未配置 SMTP 或收件人时，系统不会中断聊天流程，但会在 `alert_records` 中写入 `FAILED` 记录，提示缺少的配置项。
 
 ## 接入本地微调 GGUF 模型
+
+当前本地微调模型的工具调用能力尚未做真实验收；MB-022 的真实验收使用项目 `.env` 中的 OpenAI-compatible Qwen 模型。Ollama 仅有协议形状回归测试。
 
 Python 版默认预留本地模型名：
 

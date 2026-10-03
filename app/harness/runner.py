@@ -341,17 +341,9 @@ def run_risk_safety_harness(context: HarnessContext) -> dict:
                 if expected_risk:
                     expect(report.risk_level == expected_risk, f"{case['id']} expected {expected_risk}, got {report.risk_level}")
                 jobs = db.query(ToolJob).filter(ToolJob.report_id == report.id).all()
-                has_alert = any(job.kind == ToolJobKind.ALERT_SEND.value for job in jobs)
-                expect(has_alert == case["expects_alert"], f"{case['id']} alert job expectation failed")
-                expect(
-                    any(job.kind == ToolJobKind.EXCEL_REPORT.value for job in jobs),
-                    f"{case['id']} did not enqueue Excel report job",
-                )
-                if case["expects_alert"]:
-                    expect(
-                        any(job.kind == ToolJobKind.CASE_CREATE.value for job in jobs),
-                        f"{case['id']} did not enqueue case creation job",
-                    )
+                expect(len(jobs) == 1 and jobs[0].kind == ToolJobKind.TOOL_LOOP.value,
+                       f"{case['id']} did not persist one parent job")
+                expect(jobs[0].status == "PENDING", "SSE must not execute the background loop")
             forbidden = ["风险等级", "报告ID", "emotionScore", "HIGH_RISK"]
             expect(not any(term in token_text for term in forbidden), f"{case['id']} exposed backend risk metadata")
             observed.append({"id": case["id"], "report": report is not None, "assistantChars": len(token_text)})
@@ -700,6 +692,12 @@ def run_api_harness(context: HarnessContext) -> dict:
 
         admin_reports = client.get("/api/admin/reports", headers=admin_auth)
         expect(admin_reports.status_code == 200, f"admin reports failed: {admin_reports.status_code}")
+        expect(client.get("/api/admin/tool-audits?job_id=1&limit=1000", headers=student_auth).status_code == 403,
+               "student must not read tool loop audits")
+        expect(client.get("/api/admin/tool-audits?job_id=1&limit=1000", headers=admin_auth).status_code == 200,
+               "admin audit filtering failed")
+        expect(client.get("/api/admin/tool-audits?limit=1001", headers=admin_auth).status_code == 422,
+               "audit query bound must be validated")
 
         ingest = client.post(
             "/api/admin/knowledge",
@@ -750,12 +748,18 @@ def run_tool_queue_harness(context: HarnessContext) -> dict:
         db.refresh(report)
 
         jobs = ToolQueueService(db, context.settings).enqueue_report(report.id, report.risk_level)
-        expect(len(jobs) == 3, f"expected 3 jobs for high risk report, got {len(jobs)}")
-        excel_job = next(job for job in jobs if job.kind == ToolJobKind.EXCEL_REPORT.value)
-        case_job = next(job for job in jobs if job.kind == ToolJobKind.CASE_CREATE.value)
-        alert_job = next(job for job in jobs if job.kind == ToolJobKind.ALERT_SEND.value)
-        expect(alert_job.depends_on_job_id == case_job.id, "alert job does not depend on case creation job")
-        expect(not worker._dependency_ready(db, alert_job), "alert dependency should not be ready before case creation success")
+        expect(len(jobs) == 1 and jobs[0].kind == ToolJobKind.TOOL_LOOP.value, "expected one TOOL_LOOP parent")
+        parent_job = jobs[0]
+        parent_job.status = ToolJobStatus.RUNNING.value
+        db.commit()
+        worker._run_job(parent_job.id)
+        db.refresh(parent_job)
+        expect(parent_job.status == ToolJobStatus.SUCCESS.value, f"loop failed: {parent_job.last_error}")
+        from app.models.entities import ToolAuditRecord
+        audits = db.query(ToolAuditRecord).filter_by(job_id=parent_job.id).all()
+        expect(any(a.status == "MODEL_REQUEST" for a in audits), "missing model requests")
+        expect(sum(a.status == "TOOL_MESSAGE" for a in audits) == 3, "missing correlated tool messages")
+        expect(any(a.status == "LOOP_COMPLETED" for a in audits), "missing terminal trace")
 
         tools = ToolOrchestrationService(db, context.settings)
         excel_record = tools.write_excel(report)
@@ -766,11 +770,6 @@ def run_tool_queue_harness(context: HarnessContext) -> dict:
         case_record = tools.create_case(report)
         second_case_record = tools.create_case(report)
         expect(second_case_record.id == case_record.id, "case creation is not idempotent")
-
-        case_job.status = ToolJobStatus.SUCCESS.value
-        db.add(case_job)
-        db.commit()
-        expect(worker._dependency_ready(db, alert_job), "alert dependency was not ready after case creation success")
 
         alert_record = tools.send_case_alert(case_record)
         expect(alert_record.status == ToolStatus.SUCCESS.value, f"alert notify failed: {alert_record.message}")
@@ -801,9 +800,8 @@ def run_tool_queue_harness(context: HarnessContext) -> dict:
 
         return {
             "reportId": report.id,
-            "excelJobId": excel_job.id,
-            "caseJobId": case_job.id,
-            "alertJobId": alert_job.id,
+            "parentJobId": parent_job.id,
+            "auditCount": len(audits),
             "caseId": case_record.id,
             "excelPath": excel_record.file_path,
             "deadLetterId": dead_letter.id,

@@ -1,13 +1,62 @@
 from __future__ import annotations
 
 import json
-from typing import Iterable
+from dataclasses import dataclass
+from typing import Any, Iterable, Mapping, Sequence
+from uuid import uuid4
 
 import httpx
 
 from app.core.config import Settings
 from app.core.enums import IntentType, RiskLevel
 from app.schemas.dtos import AiMessage
+
+
+@dataclass(frozen=True)
+class AiToolCall:
+    id: str
+    name: str
+    arguments: str
+    protocol: str = "openai"
+
+    def arguments_object(self) -> dict[str, Any]:
+        try:
+            value = json.loads(self.arguments)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"工具 {self.name} 的 arguments 不是合法 JSON") from exc
+        if not isinstance(value, dict):
+            raise ValueError(f"工具 {self.name} 的 arguments 必须是 JSON object")
+        return value
+
+    def assistant_tool_call(self) -> dict[str, Any]:
+        arguments: str | dict[str, Any] = self.arguments
+        if self.protocol == "ollama":
+            arguments = self.arguments_object()
+        tool_call = {
+            "type": "function",
+            "function": {"name": self.name, "arguments": arguments},
+        }
+        if self.protocol != "ollama":
+            tool_call["id"] = self.id
+        return tool_call
+
+    def result_message(self, content: str) -> dict[str, Any]:
+        if self.protocol == "ollama":
+            return {"role": "tool", "tool_name": self.name, "content": content}
+        return {"role": "tool", "tool_call_id": self.id, "content": content}
+
+
+@dataclass(frozen=True)
+class AiToolDecision:
+    content: str | None
+    tool_calls: tuple[AiToolCall, ...]
+    finish_reason: str | None
+
+    def assistant_message(self) -> dict[str, Any]:
+        message: dict[str, Any] = {"role": "assistant", "content": self.content}
+        if self.tool_calls:
+            message["tool_calls"] = [call.assistant_tool_call() for call in self.tool_calls]
+        return message
 
 
 # Prompt 模板工具类：只把三个"拼 prompt"的函数归拢在一起，无状态、无实例，全部静态方法直接类名调用
@@ -96,6 +145,20 @@ class AiClient:
         for chunk in split_text(text, 12):
             yield chunk
 
+    async def complete_with_tools(
+        self,
+        messages: Sequence[AiMessage | Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]],
+    ) -> AiToolDecision:
+        provider = self.settings.ai_provider.lower()
+        if provider == "openai":
+            return await self._openai_with_tools(messages, tools)
+        if provider == "ollama":
+            return await self._ollama_with_tools(messages, tools)
+        if provider == "mock":
+            return self._mock_with_tools(messages, tools)
+        raise RuntimeError(f"原生 Function Calling 不支持 AI_PROVIDER={provider}")
+
     def _ollama(self, messages: list[AiMessage], stream: bool) -> str:
 
         payload = {
@@ -129,6 +192,29 @@ class AiClient:
                     token = data.get("message", {}).get("content", "")              # 取 message.content——就是模型生成的 token 文本
                     if token:
                         yield token
+
+    async def _ollama_with_tools(
+        self,
+        messages: Sequence[AiMessage | Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]],
+    ) -> AiToolDecision:
+        payload = {
+            "model": self.settings.ollama_model,
+            "messages": [_ai_message_payload(message) for message in messages],
+            "tools": [_ollama_tool_payload(tool) for tool in tools],
+            "stream": False,
+            "options": {
+                "temperature": self.settings.ai_temperature,
+                "num_predict": self.settings.ai_max_tokens,
+            },
+        }
+        async with httpx.AsyncClient(timeout=60) as client:
+            response = await client.post(
+                f"{self.settings.ollama_base_url}/api/chat",
+                json=payload,
+            )
+        response.raise_for_status()
+        return _parse_ollama_tool_decision(response.json())
 
     def _openai(self, messages: list[AiMessage], stream: bool) -> str:
         headers = {"Authorization": f"Bearer {self.settings.openai_api_key}"}
@@ -169,6 +255,34 @@ class AiClient:
                     if token:
                         yield token
 
+    async def _openai_with_tools(
+        self,
+        messages: Sequence[AiMessage | Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]],
+    ) -> AiToolDecision:
+        headers = {"Authorization": f"Bearer {self.settings.openai_api_key}"}
+        payload = {
+            "model": self.settings.openai_model,
+            "messages": [_ai_message_payload(message) for message in messages],
+            "tools": [dict(tool) for tool in tools],
+            "tool_choice": "auto",
+            "parallel_tool_calls": False,
+            "temperature": self.settings.ai_temperature,
+            "max_tokens": self.settings.ai_max_tokens,
+            "stream": False,
+        }
+        # 百炼部分 Qwen 模型非流式调用必须关闭思考；不向其他供应商发送私有参数。
+        if "dashscope.aliyuncs.com" in self.settings.openai_base_url:
+            payload["enable_thinking"] = False
+        async with httpx.AsyncClient(timeout=60) as client:
+            response = await client.post(
+                f"{self.settings.openai_base_url}/chat/completions",
+                headers=headers,
+                json=payload,
+            )
+        response.raise_for_status()
+        return _parse_openai_tool_decision(response.json())
+
     def _mock(self, messages: list[AiMessage]) -> str:
         last = next((m.content for m in reversed(messages) if m.role == "user"), "")
         system = " ".join(m.content for m in messages if m.role == "system")
@@ -202,6 +316,45 @@ class AiClient:
             return last[:40] or "校园心理支持"
         return "我在。先把你现在最具体的困扰说出来，我们可以一步一步拆开。如果情况已经影响安全，请马上联系身边可信任的人或学校心理中心。"
 
+    def _mock_with_tools(
+        self,
+        messages: Sequence[AiMessage | Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]],
+    ) -> AiToolDecision:
+        called_names = {
+            function.get("name")
+            for message in messages
+            for function in _assistant_functions(_ai_message_payload(message))
+        }
+        available_names = [_tool_function(tool).get("name") for tool in tools]
+        # Restore from trusted DB status, not only calls seen in this attempt.
+        state = next((payload["content"] for message in reversed(messages)
+                      if (payload := _ai_message_payload(message)).get("role") == "system"
+                      and str(payload.get("content", "")).startswith("可信数据库状态：")), None)
+        if state is not None:
+            from app.services.tool_governance import ToolPolicyRegistry
+
+            pending_kinds = state.split("；待处理 ", 1)[-1].split(", ")
+            available_names = [name for name in available_names
+                               if ToolPolicyRegistry.policy_for_function(name).name in pending_kinds]
+            called_names = set()
+        next_name = next(
+            (name for name in available_names if isinstance(name, str) and name not in called_names),
+            None,
+        )
+        if next_name is None:
+            return AiToolDecision(
+                content="Tool workflow complete.",
+                tool_calls=(),
+                finish_reason="stop",
+            )
+        call = AiToolCall(
+            id=f"mock_call_{uuid4().hex}",
+            name=next_name,
+            arguments="{}",
+        )
+        return AiToolDecision(content=None, tool_calls=(call,), finish_reason="tool_calls")
+
 
 # 供 prompt 拼装使用：把消息列表拍平成多行文本（每行"角色: 内容"），只取最近 20 条，空列表返回"无"
 def format_history(history: list[AiMessage]) -> str:
@@ -234,3 +387,129 @@ def split_text(text: str, size: int) -> Iterable[str]:
 
         # yield 让一个普通函数变成生成器（generator）——它不回一个结果就结束，而是每次产出/暂停一个值，调用方要一个它给一个
         yield text[index:index + size]
+
+
+def _ai_message_payload(message: AiMessage | Mapping[str, Any]) -> dict[str, Any]:
+    if isinstance(message, AiMessage):
+        return message.model_dump()
+    return dict(message)
+
+
+def _tool_function(tool: Mapping[str, Any]) -> Mapping[str, Any]:
+    function = tool.get("function")
+    if not isinstance(function, Mapping):
+        raise ValueError("工具定义缺少 function")
+    return function
+
+
+def _assistant_functions(message: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    if message.get("role") != "assistant":
+        return []
+    raw_calls = message.get("tool_calls", [])
+    if raw_calls is None:
+        raw_calls = []
+    if not isinstance(raw_calls, list):
+        return []
+    return [
+        function
+        for call in raw_calls
+        if isinstance(call, Mapping)
+        for function in [call.get("function")]
+        if isinstance(function, Mapping)
+    ]
+
+
+def _ollama_tool_payload(tool: Mapping[str, Any]) -> dict[str, Any]:
+    function = dict(_tool_function(tool))
+    function.pop("strict", None)
+    return {"type": "function", "function": function}
+
+
+def _parse_openai_tool_decision(payload: Mapping[str, Any]) -> AiToolDecision:
+    choices = payload.get("choices")
+    if not isinstance(choices, list) or not choices:
+        raise ValueError("Function Calling 响应缺少 choices")
+    choice = choices[0]
+    if not isinstance(choice, dict) or not isinstance(choice.get("message"), dict):
+        raise ValueError("Function Calling 响应缺少 assistant message")
+    message = choice["message"]
+    content = message.get("content")
+    if content is not None and not isinstance(content, str):
+        raise ValueError("Function Calling 响应的 content 必须是字符串或 null")
+
+    parsed_calls: list[AiToolCall] = []
+    raw_calls = message.get("tool_calls", [])
+    if raw_calls is None:
+        raw_calls = []
+    if not isinstance(raw_calls, list):
+        raise ValueError("Function Calling 响应的 tool_calls 必须是数组")
+    for raw_call in raw_calls:
+        if not isinstance(raw_call, dict) or raw_call.get("type") != "function":
+            raise ValueError("Function Calling 响应包含非法 tool call")
+        function = raw_call.get("function")
+        call_id = raw_call.get("id")
+        if not isinstance(function, dict) or not isinstance(call_id, str) or not call_id:
+            raise ValueError("Function Calling 响应缺少 tool call id 或 function")
+        name = function.get("name")
+        arguments = function.get("arguments")
+        if not isinstance(name, str) or not name or not isinstance(arguments, str):
+            raise ValueError("Function Calling 响应缺少函数名或字符串 arguments")
+        parsed_calls.append(AiToolCall(id=call_id, name=name, arguments=arguments))
+
+    if len({call.id for call in parsed_calls}) != len(parsed_calls):
+        raise ValueError("Function Calling 响应包含重复调用 ID")
+
+    finish_reason = choice.get("finish_reason")
+    if finish_reason is not None and not isinstance(finish_reason, str):
+        raise ValueError("Function Calling 响应的 finish_reason 必须是字符串或 null")
+    return AiToolDecision(
+        content=content,
+        tool_calls=tuple(parsed_calls),
+        finish_reason=finish_reason,
+    )
+
+
+def _parse_ollama_tool_decision(payload: Mapping[str, Any]) -> AiToolDecision:
+    message = payload.get("message")
+    if not isinstance(message, dict):
+        raise ValueError("Ollama Function Calling 响应缺少 assistant message")
+    content = message.get("content")
+    if content is not None and not isinstance(content, str):
+        raise ValueError("Ollama Function Calling 响应的 content 必须是字符串或 null")
+
+    parsed_calls: list[AiToolCall] = []
+    raw_calls = message.get("tool_calls") or []
+    if not isinstance(raw_calls, list):
+        raise ValueError("Ollama Function Calling 响应的 tool_calls 必须是数组")
+    for raw_call in raw_calls:
+        if not isinstance(raw_call, dict):
+            raise ValueError("Ollama Function Calling 响应包含非法 tool call")
+        function = raw_call.get("function")
+        if not isinstance(function, dict):
+            raise ValueError("Ollama Function Calling 响应缺少 function")
+        name = function.get("name")
+        arguments = function.get("arguments")
+        if not isinstance(name, str) or not name or not isinstance(arguments, (dict, str)):
+            raise ValueError("Ollama Function Calling 响应缺少函数名或 object arguments")
+        arguments_json = (
+            arguments
+            if isinstance(arguments, str)
+            else json.dumps(arguments, ensure_ascii=False, separators=(",", ":"))
+        )
+        parsed_calls.append(
+            AiToolCall(
+                id=f"ollama_call_{uuid4().hex}",
+                name=name,
+                arguments=arguments_json,
+                protocol="ollama",
+            )
+        )
+
+    finish_reason = payload.get("done_reason")
+    if finish_reason is not None and not isinstance(finish_reason, str):
+        raise ValueError("Ollama Function Calling 响应的 done_reason 必须是字符串或 null")
+    return AiToolDecision(
+        content=content,
+        tool_calls=tuple(parsed_calls),
+        finish_reason=finish_reason,
+    )

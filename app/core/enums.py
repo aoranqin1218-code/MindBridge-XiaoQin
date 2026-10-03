@@ -35,11 +35,13 @@ class ToolStatus(str, Enum):
     FAILED = "FAILED"
 
 
+# 工具任务的类型——一次风险处置流程里，按风险等级会产生不同的工具任务
 class ToolJobKind(str, Enum):
-    EXCEL_REPORT = "EXCEL_REPORT"
-    CASE_CREATE = "CASE_CREATE"
-    ALERT_SEND = "ALERT_SEND"
-    RISK_ALERT = "RISK_ALERT"
+    TOOL_LOOP = "TOOL_LOOP"                  # 工具循环本身（AI 自主决定调用哪个工具的模式，不对外暴露）
+    EXCEL_REPORT = "EXCEL_REPORT"            # 生成 Excel 台账（把心理报告写入咨询师可见的台账）
+    CASE_CREATE = "CASE_CREATE"              # 创建风险个案（中/高风险报告，创建或复用）
+    ALERT_SEND = "ALERT_SEND"                # 发送紧急预警（高风险报告，依赖个案创建）
+    RISK_ALERT = "RISK_ALERT"                # 旧版高风险预警（仅为兼容保留）
 
 
 class ToolJobStatus(str, Enum):

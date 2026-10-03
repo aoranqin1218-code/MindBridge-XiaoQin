@@ -118,7 +118,7 @@ class MindBridgeAgentHarness:
         if tool_plan.report_id is None:
             return []
 
-        # 有队列 → 把任务写入 tool_jobs 表，由后台 Worker 异步执行
+        # 有队列 → 持久化一个 TOOL_LOOP 父任务（关闭 loop 开关时才是旧 1/2/3 子任务）
         # 这些工具任务跟用户的对话体验完全无关——用户已经看到回复了，Excel 报表、个案、预警这些是后台异步跑的
         if self.settings.tool_queue_enabled:
             ToolQueueService(self.db, self.settings).enqueue_report(tool_plan.report_id, tool_plan.risk_level)
